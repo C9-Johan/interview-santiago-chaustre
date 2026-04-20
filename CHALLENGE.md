@@ -22,45 +22,7 @@ You will **not** have live API credentials. Assume Guesty and OpenAI exist; buil
 
 ### Flow at a glance
 
-```
- Guest (Guesty)       Your Service              OpenAI              Guesty API
-      |                    |                      |                      |
-      |  1. POST webhook   |                      |                      |
-      |------------------->|                      |                      |
-      |  2. 200 OK (fast)  |                      |                      |
-      |<-------------------|                      |                      |
-      |                    |                      |                      |
-      |         [verify Svix sig | dedupe postId | debounce burst]       |
-      |                    |                      |                      |
-      |                    |  3. classify msg     |                      |
-      |                    |--------------------->|                      |
-      |                    |  4. code + confidence|                      |
-      |                    |     + entities       |                      |
-      |                    |<---------------------|                      |
-      |                    |                      |                      |
-      |                    |  5. GET listing facts                       |
-      |                    |-------------------------------------------->|
-      |                    |  6. GET availability / total price          |
-      |                    |-------------------------------------------->|
-      |                    |  7. listing + availability                  |
-      |                    |<--------------------------------------------|
-      |                    |                      |                      |
-      |                    |  8. generate C.L.O.S.E.R. reply             |
-      |                    |     (context + facts)|                      |
-      |                    |--------------------->|                      |
-      |                    |  9. draft reply      |                      |
-      |                    |<---------------------|                      |
-      |                    |                      |                      |
-      |              [GATE: low-risk code? conf >= 0.65? toggle on?]     |
-      |                    |                      |                      |
-      |                    |  10a. IF PASS -> POST note                  |
-      |                    |-------------------------------------------->|
-      |                    |                                             |
-      |                    |  10b. ELSE -> queue for human / notify team |
-      |                    |                      |                      |
-```
-
-**Read it as**: the webhook acknowledges fast, then everything else happens async. Classification gates generation, generation uses real listing facts, and the final auto-send decision is a hard rules check — **not** something the LLM decides.
+The webhook acknowledges fast, then everything else happens async. Classification gates generation, generation uses real listing facts, and the final auto-send decision is a hard rules check — **not** something the LLM decides.
 
 ## 3. What We Evaluate
 
