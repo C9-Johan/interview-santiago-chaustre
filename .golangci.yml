@@ -1,0 +1,82 @@
+version: "2"
+run:
+  tests: true
+linters:
+  enable:
+    - bodyclose
+    - cyclop
+    - dupl
+    - errorlint
+    - funlen
+    - gocognit
+    - goconst
+    - gocritic
+    - gosec
+    - maintidx
+    - nestif
+    - prealloc
+    - revive
+  settings:
+    cyclop:
+      max-complexity: 30
+      package-average: 10
+    dupl:
+      threshold: 150
+    funlen:
+      lines: 100
+      statements: 50
+    gocognit:
+      min-complexity: 20
+    goconst:
+      min-len: 3
+      min-occurrences: 3
+    gocritic:
+      settings:
+        hugeParam:
+          sizeThreshold: 256
+        rangeValCopy:
+          sizeThreshold: 256
+    maintidx:
+      under: 20
+    nestif:
+      min-complexity: 5
+    revive:
+      rules:
+        - name: unused-parameter
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - cyclop
+          - dupl
+          - funlen
+          - gocognit
+          - maintidx
+        path: _test\.go
+      - linters:
+          - errcheck
+          - revive
+          - staticcheck
+        path: mocks/
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+  settings:
+    goimports:
+      local-prefixes: github.com/chaustre/inquiryiq

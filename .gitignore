@@ -217,3 +217,9 @@ tags
 !docs/superpowers/plans/
 !docs/superpowers/plans/**
 
+# Project-specific
+/data/
+/coverage.out
+/tmp/
+!.env.example
+
