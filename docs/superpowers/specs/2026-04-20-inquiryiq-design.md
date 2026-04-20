@@ -73,60 +73,131 @@ Two gates are deliberate: the first one kills bad cases cheaply before any gener
 
 ## 3. Package layout
 
+Follows the four-layer DDD structure specified in `CLAUDE.md`: **one-way dependency outer → inner, domain knows nothing about transport or infra.** Exported contract interfaces live in `internal/domain/repository/`; concrete implementations live in `internal/infrastructure/`; use cases orchestrate in `internal/application/`. Mappers sit at every layer boundary — **no shared structs across layers**.
+
 ```
 cmd/
-  server/main.go            # wire everything, start http.Server
-  replay/main.go            # ./replay <postId> — re-run a stored webhook through the pipeline
+  server/main.go                           # wire deps, start HTTP server
+  replay/main.go                           # ./replay <postId> — re-run a stored webhook
+
 internal/
-  config/                   # env loader
-  transport/
-    webhook.go              # POST /webhooks/guesty/message-received
-    svix.go                 # HMAC-SHA256 verify on raw body
-    health.go               # GET /healthz, GET /escalations
-  domain/
-    types.go                # Message, Turn, Classification, Reply, Decision, Observation
-    conversation.go         # ConversationKey, ConversationResolver
-    classifier.go           # Classifier interface
-    generator.go            # Generator interface, agent loop
-    gate.go                 # Decide(...) pure function
-    closer.go               # post-generation validation (beats, hedging, length)
-    restricted.go           # regex-based restricted-content hits
-    memory.go               # ConversationMemory interface (summarizer)
-    ports.go                # cross-cutting interfaces (GuestyClient, LLMClient)
-  pipeline/
-    debounce.go             # Debouncer interface + timedDebouncer
-    orchestrator.go         # the flow above
-    idempotency.go          # uses IdempotencyStore interface
-  integrations/
-    guesty/                 # http impl of GuestyClient against a base URL (Mockoon in dev)
-      client.go
-      types.go
+  transport/http/
+    router.go                              # chi routes
+    handler.go                             # POST /webhooks/guesty/message-received,
+                                           # GET /escalations, GET /healthz
+    svix.go                                # HMAC-SHA256 verify on raw body
+    dto.go                                 # raw webhook JSON shape (transport-local)
+    mapper.go                              # transport DTO -> domain.Message/Conversation
+
+  application/                             # use cases (orchestration, no business rules)
+    processinquiry/                        # ProcessInquiry — top-level orchestrator
+      usecase.go                           # Run(ctx, Turn) — the full flow
+      debounce.go                          # consumes repository.Debouncer
+      idempotency.go                       # consumes repository.IdempotencyStore
+    classify/                              # Classify use case (Stage A)
+      usecase.go
+      prompt.go                            # system prompt const + schema validator
+    generatereply/                         # GenerateReply use case (Stage B)
+      usecase.go                           # agent loop, max-turns, reflection
+      prompt.go                            # generator + reflection system prompts
+      tooldispatch.go                      # runTool() helper
+    decide/                                # gate use cases (pure)
+      pregenerate.go                       # GATE 1 — PreGenerate(cls, toggles)
+      decide.go                            # GATE 2 — Decide(cls, reply, issues, toggles)
+      validate.go                          # ValidateReply (length, hedging, beats)
+      restricted.go                        # regex-based restricted-content hits
+
+  domain/                                  # entities, value objects, sentinel errors
+    message.go                             # Message, Role
+    turn.go                                # Turn, PriorContext
+    conversation.go                        # ConversationKey, Conversation
+    classification.go                      # Classification, PrimaryCode, NextAction,
+                                           # ExtractedEntities, Observation
+    reply.go                               # Reply, CloserBeats, ToolCall
+    decision.go                            # Decision
+    escalation.go                          # Escalation
+    memory.go                              # ConversationMemoryRecord
+    listing.go                             # Listing, Availability
+    toggles.go                             # Toggles
+    errors.go                              # sentinel errors
+    repository/                            # EXPORTED interfaces (the contract surface)
+      guesty.go                            # GuestyClient
+      llm.go                               # LLMClient
+      stores.go                            # WebhookStore, IdempotencyStore,
+                                           # ClassificationStore, EscalationStore,
+                                           # ConversationMemoryStore, ConversationAliasStore
+      resolver.go                          # ConversationResolver
+      memory.go                            # ConversationMemory (summarizer)
+      debouncer.go                         # Debouncer
+      clock.go                             # Clock
+    mappers/                               # pure funcs at domain boundaries
+      guesty_to_domain.go                  # Guesty API DTOs -> domain
+      domain_to_guesty.go                  # domain Reply -> Guesty note payload
+
+  infrastructure/                          # implements domain/repository.* contracts
+    guesty/
+      client.go                            # HTTP client w/ configurable BaseURL (Mockoon in dev)
+      types.go                             # Guesty API DTOs (infrastructure-local)
+      retry.go                             # 429/5xx backoff + jitter
     llm/
-      client.go             # wraps sashabaranov/go-openai, BaseURL set for DeepSeek
-      tools.go              # openai.Tool definitions
-  storage/
-    ports.go                # all store interfaces live here
-    filestore/              # JSONL concrete impls
-    memstore/               # in-memory concrete impls
-  obs/
-    logger.go               # slog JSON handler, trace_id threading
+      client.go                            # sashabaranov/go-openai wrapper, BaseURL set
+      tools.go                             # openai.Tool definitions for get_listing,
+                                           # check_availability, get_conversation_history
+    store/
+      filestore/                           # JSONL append-only impls
+        webhooks.go                        # WebhookStore
+        classifications.go                 # ClassificationStore
+        escalations.go                     # EscalationStore (append-only durability)
+      memstore/                            # in-memory impls
+        idempotency.go                     # IdempotencyStore (rebuilds from webhooks.jsonl)
+        memory.go                          # ConversationMemoryStore (30s snapshots)
+        escalation_ring.go                 # in-RAM ring buffer, wraps filestore
+    debouncer/
+      timed.go                             # timed sliding-window Debouncer
+    clock/
+      real.go                              # realClock
+      fake.go                              # fakeClock (tests)
+    obs/
+      logger.go                            # slog JSON handler + trace_id threading
+    config/
+      config.go                            # env loader, one Config struct
+
 fixtures/
-  webhooks/*.json
-  mockoon/guesty.json       # Mockoon environment export
-data/                       # created at runtime, JSONL + snapshots
+  webhooks/*.json                          # test payloads
+  mockoon/guesty.json                      # Mockoon environment export
+
+data/                                      # created at runtime (JSONL + snapshots)
+
 docs/
-  superpowers/specs/2026-04-20-inquiryiq-design.md  # this file
+  superpowers/specs/2026-04-20-inquiryiq-design.md   # this file
 ```
+
+### Dependency direction (enforced)
+- `domain/` imports **nothing from this project**.
+- `domain/repository/` imports `domain/` only.
+- `application/` imports `domain/` and `domain/repository/`. No infra, no transport.
+- `infrastructure/` imports `domain/` + `domain/repository/` (to satisfy contracts) and external SDKs.
+- `transport/http/` imports `application/` (to call use cases) and `domain/` (for typed request/response shapes after mapping).
+- `cmd/` is the only place that imports across the outer layers to wire concrete types.
+
+### No shared structs across layers
+- Raw webhook JSON shape (`WebhookRequestDTO`) lives **only** in `internal/transport/http/dto.go`. `transport/http/mapper.go` converts it to `domain.Message` + `domain.Conversation` before the application layer sees anything.
+- Guesty API DTOs live **only** in `internal/infrastructure/guesty/types.go`. `domain/mappers/guesty_to_domain.go` converts them to `domain.Listing` / `domain.Availability` / `domain.Message` before returning to callers.
+- Mappers are pure functions covered by table-driven tests; they never perform I/O.
 
 ---
 
 ## 4. Interface contracts (single source of truth)
 
-Every external dependency is an interface in the consumer package. Concrete impls live in their own subpackage and are wired at `cmd/server/main.go`. Tests use fakes implementing the same interface. v2 swaps (Redis, MongoDB, SQLite) are drop-in — no domain code changes.
+Every external dependency is an exported interface in **`internal/domain/repository/`**. Per `coding-conventions.md`, exported contracts are reserved for interfaces with multiple runtime implementations — every interface here qualifies (real + fake/mock for tests, v1 in-mem + v2 Redis/Mongo/SQLite swaps).
+
+Additional **unexported** interfaces may be declared locally inside a specific use case when only that use case consumes the dependency; such interfaces never cross package boundaries.
+
+Constructors return **concrete types**, never interfaces (“accept interfaces, return structs”). Wiring happens in `cmd/server/main.go`.
 
 ### 4.1 Domain-owned external ports
 ```go
-// internal/domain/ports.go
+// internal/domain/repository/guesty.go, llm.go, resolver.go, memory.go, clock.go
 
 type GuestyClient interface {
     GetListing(ctx context.Context, id string) (Listing, error)
@@ -136,8 +207,13 @@ type GuestyClient interface {
     PostNote(ctx context.Context, conversationID, body string) error
 }
 
+// LLMClient is a thin wrapper over sashabaranov/go-openai — allows us to
+// swap the upstream provider (DeepSeek, OpenAI, Anthropic-via-compat) or
+// inject a fake in tests. ChatRequest / ChatResponse are type aliases
+// over openai.ChatCompletionRequest / openai.ChatCompletionResponse
+// to keep the surface area explicit and testable.
 type LLMClient interface {
-    Chat(ctx context.Context, req ChatRequest) (ChatResponse, error)
+    Chat(ctx context.Context, req openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error)
 }
 
 type Classifier interface {
@@ -148,8 +224,10 @@ type Generator interface {
     Generate(ctx context.Context, turn Turn, cls Classification, prior PriorContext) (Reply, error)
 }
 
+// ConversationResolver operates on domain values (NOT the raw webhook DTO).
+// Transport maps the DTO to domain.Conversation first, then calls Resolve.
 type ConversationResolver interface {
-    Resolve(ctx context.Context, w WebhookPayload) (ConversationKey, error)
+    Resolve(ctx context.Context, c Conversation) (ConversationKey, error)
 }
 
 type ConversationMemory interface {
@@ -161,6 +239,24 @@ type Clock interface {
     Since(t time.Time) time.Duration
 }
 ```
+
+### 4.1.1 Debouncer (also in domain/repository — multi-impl)
+```go
+// internal/domain/repository/debouncer.go
+
+type Debouncer interface {
+    // Push appends msg to the per-conversation buffer and (re)arms the flush timer.
+    // Dedups on msg.PostID inside the buffer.
+    Push(ctx context.Context, k ConversationKey, msg Message)
+
+    // CancelIfHostReplied drops any active buffer for k when the sender is not a guest.
+    CancelIfHostReplied(k ConversationKey, role Role)
+
+    // Stop shuts down internal timers cleanly (used in graceful shutdown / tests).
+    Stop()
+}
+```
+Flushes are delivered to a `FlushFn func(ctx context.Context, turn Turn)` configured at construction — typically `orchestrator.Run`. Flush is NOT part of the public interface; it's internal to the impl.
 
 ### 4.2 Storage ports (all behind interfaces)
 ```go
@@ -195,6 +291,118 @@ type ConversationMemoryStore interface {
 type ConversationAliasStore interface {
     Lookup(ctx context.Context, rawID string) (ConversationKey, bool, error)
     Link(ctx context.Context, rawIDs []string, canonical ConversationKey) error
+}
+```
+
+### 4.2.1 Supporting types (referenced by the ports above)
+```go
+// internal/domain/types.go (selected — not exhaustive)
+
+type Role string
+const (
+    RoleGuest  Role = "guest"  // "fromGuest" | "toHost"
+    RoleHost   Role = "host"   // "fromHost"  | "toGuest"
+    RoleSystem Role = "system" // anything else
+)
+
+type Message struct {
+    PostID    string
+    Body      string
+    CreatedAt time.Time
+    Role      Role
+    Module    string // "airbnb2" | "booking" | "vrbo" | "direct"
+}
+
+type Turn struct {
+    Key         ConversationKey
+    Messages    []Message // dedup'd by postID, oldest -> newest
+    LastPostID  string    // newest message's postID — drives idempotency.Complete
+}
+
+type PriorContext struct {
+    Summary       string            // layer-1 prior-thread summary, may be ""
+    KnownEntities ExtractedEntities // carried forward, advisory only
+    Thread        []Message         // last THREAD_CONTEXT_WINDOW non-system, oldest -> newest
+}
+
+// NOTE: the raw webhook JSON shape (WebhookRequestDTO) is transport-local and
+// lives at internal/transport/http/dto.go — it MUST NOT leak into domain. The
+// transport mapper converts it to domain.Message + domain.Conversation before
+// the application layer is called.
+
+type WebhookRecord struct {
+    SvixID      string            // header, idempotency key for deliveries
+    Headers     map[string]string // full header snapshot, for replay
+    RawBody     []byte            // raw request body — NEVER re-serialized
+    ReceivedAt  time.Time
+    PostID      string            // extracted convenience field for indexing
+    ConvRawID   string            // raw conversation._id (pre-canonicalization)
+    TraceID     string
+}
+
+type Escalation struct {
+    ID              string            // uuid
+    TraceID         string
+    PostID          string
+    ConversationKey ConversationKey
+    GuestName       string
+    Platform        string
+    CreatedAt       time.Time
+
+    Reason          string   // e.g. "code_requires_human", "max_turns", "restricted_content"
+    Detail          []string // specifics — validation issues, LLM reflection fragments
+
+    Classification  Classification
+    Reply           *Reply // nil if aborted before generation
+    MissingInfo     []string
+    PartialFindings string
+}
+
+type ConversationMemoryRecord struct {
+    ConversationKey    ConversationKey
+    LastSummary        string
+    LastSummaryPostID  string
+    KnownEntities      ExtractedEntities
+    AdditionalSignals  []Observation
+    LastClassification *Classification
+    LastAutoSendAt     *time.Time
+    LastEscalationAt   *time.Time
+    EscalationReasons  []string // tail of last N reasons, cap ~10
+    UpdatedAt          time.Time
+}
+
+type Listing struct {
+    ID          string
+    Title       string
+    Bedrooms    int
+    Beds        int
+    MaxGuests   int
+    Amenities   []string
+    HouseRules  []string
+    BasePrice   float64
+    Neighborhood string
+}
+
+type Availability struct {
+    Available bool
+    Nights    int
+    TotalUSD  float64
+}
+
+type Conversation struct {
+    ID       string
+    GuestID  string
+    Language string
+    Thread   []Message
+    Meta     struct {
+        GuestName    string
+        Reservations []struct {
+            ID               string
+            CheckIn, CheckOut time.Time
+            ConfirmationCode string
+        }
+    }
+    Integration struct{ Platform string }
 }
 ```
 
@@ -472,7 +680,12 @@ Three tools, declared with `FunctionDefinition.Strict: true`:
 Full `FunctionDefinition.Parameters` are defined in `internal/integrations/llm/tools.go`.
 
 ### 6.3 Agent loop
+
+Split into four helpers to stay under the conventions' function-size limits (`funlen` 100 lines / 50 statements, `gocognit` 20, `nestif` 5): `Run` is the top-level loop; `callOnce`, `runTool`, `parseFinal`, and `reflectOnFailure` each have a single responsibility.
+
 ```go
+// internal/application/generatereply/usecase.go (sketch — helpers elided)
+
 for i := 0; i < maxTurns; i++ {
     resp, err := llm.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
         Model:               cfg.ModelGenerator,
@@ -543,20 +756,38 @@ Key is the tuple `(ConversationKey, postID)`, not just `postID`. This handles th
 
 States: `inflight` (claimed but not complete), `complete` (processed, drop on re-arrival). On server restart, the `memstore.Idempotency` impl rebuilds the seen-set from `data/webhooks.jsonl` by pairing webhook records with classification records; anything in the webhook log but not in the classification log is treated as `never-processed` and eligible on next receipt.
 
-### 7.3 Gate — `domain/gate.Decide` (pure)
-Short-circuit order:
-1. `!AutoResponseEnabled` → deny.
-2. `reply.AbortReason != ""` → deny with detail.
-3. `cls.PrimaryCode ∈ {Y2, Y5, R1, R2}` → deny (code requires human).
-4. `cls.PrimaryCode ∉ {G1, G2, Y1, Y3, Y4, Y6, Y7}` → deny (not low-risk).
-5. `cls.Confidence < 0.65` → deny.
-6. `reply.Confidence < 0.70` → deny.
-7. `cls.RiskFlag` → deny.
-8. `len(validationIssues) > 0` → deny with issues.
-9. `restrictedContentHits(reply.Body)` non-empty → deny with hits.
-10. Otherwise → `AutoSend: true, Reason: "ok"`.
+### 7.3 Gates — two pure functions, two call sites
 
-Every denial carries `Reason` (machine-readable) + `Detail` ([]string, specifics). Both are written into the `Escalation` record.
+Both gates are pure functions in `internal/domain/gate.go`. Tests are exhaustive table-driven — one case per `Reason` branch.
+
+#### GATE 1 — `PreGenerate(cls Classification, t Toggles) Decision`
+Runs **after classification, before generation.** Kills bad cases before any generator tokens are spent. Uses only classification-dependent inputs.
+
+Short-circuit order:
+1. `!t.AutoResponseEnabled` → deny, `Reason="auto_disabled"`.
+2. `cls.RiskFlag` → deny, `Reason="risk_flag"`, detail `[cls.RiskReason]`.
+3. `cls.PrimaryCode ∈ {Y2, Y5, R1, R2}` → deny, `Reason="code_requires_human"`, detail `[code]`.
+4. `cls.PrimaryCode ∉ {G1, G2, Y1, Y3, Y4, Y6, Y7}` → deny, `Reason="code_not_in_low_risk"` (catches `X1` and any residual).
+5. `cls.Confidence < CONFIDENCE_CLASSIFIER_MIN` → deny, `Reason="classifier_low_confidence"`.
+6. Otherwise → `AutoSend: true, Reason: "ok_to_generate"` (advisory — not a final "send" decision; just "proceed to generation").
+
+If GATE 1 denies, the orchestrator skips generation and records an escalation with the `Reason`/`Detail`.
+
+#### GATE 2 — `Decide(cls Classification, reply Reply, validationIssues []string, t Toggles) Decision`
+Runs **after generation**, before outbound. Re-checks the classification-dependent rules (in case toggles changed between gates) plus reply-dependent rules.
+
+Short-circuit order:
+1. `!t.AutoResponseEnabled` → deny, `Reason="auto_disabled"`.
+2. `reply.AbortReason != ""` → deny, `Reason="generator_aborted"`, detail `[reply.AbortReason]`.
+3. GATE 1 rules (risk_flag, requires_human, low_risk, classifier_conf) — re-apply.
+4. `reply.Confidence < CONFIDENCE_GENERATOR_MIN` → deny, `Reason="generator_low_confidence"`.
+5. `len(validationIssues) > 0` → deny, `Reason="reply_validation"`, detail = issues.
+6. `restrictedContentHits(reply.Body)` non-empty → deny, `Reason="restricted_content"`, detail = hits.
+7. Otherwise → `AutoSend: true, Reason: "ok"`.
+
+Every denial carries `Reason` (machine-readable) + `Detail` ([]string). Both are written into the `Escalation` record and surfaced via `GET /escalations`.
+
+**Why two functions, not one:** GATE 1's signature does not include `reply` — calling a single `Decide(cls, reply=nil, ...)` would muddle the contract and make table tests harder to read. Shared rules are extracted into unexported helpers (e.g., `classifierVerdict(cls, t) *Decision`) so the two gates can't drift out of sync.
 
 ### 7.4 Restricted-content filter
 Regex-only checks in `domain/restricted.go`:
@@ -724,7 +955,27 @@ Replay:
 
 ---
 
-## 16. Open questions (to confirm with interviewer)
+## 16. Code conventions (binding)
+
+This spec inherits `coding-conventions.md` and `CLAUDE.md` in full. The rules most likely to affect implementation choices:
+
+- **Guard clauses, no `else`.** Every terminating branch is followed by a flat happy path.
+- **Consumer-side interfaces.** Default to unexported. Export only when multiple runtime impls exist. All contracts in §4 qualify (real + fake + v2 swaps) and live in `internal/domain/repository/`.
+- **Constructors return concrete types.** Interfaces are accepted by constructors, never returned.
+- **Generics over `any`/`reflect`.** The only acceptable `any` uses in this project are the go-openai SDK boundary (`FunctionDefinition.Parameters`) and JSON-envelope boundaries at the wire; both are documented inline where they occur.
+- **Mappers at every layer boundary.** Transport DTO ↔ domain, Guesty DTO ↔ domain — pure functions in `transport/http/mapper.go` and `domain/mappers/*`, covered by table tests. No shared structs across layers.
+- **GoDoc on every exported identifier.** Behavior-oriented, not implementation; references sentinel errors by name; documents side effects.
+- **Error wrapping with `%w`.** `errors.Is` / `errors.As` for comparison. Never discard an error silently; `_ =` requires a one-line comment stating why.
+- **Function size under the gate.** `funlen` 100 lines / 50 statements, `cyclop` 30, `gocognit` 20, `nestif` 5, `dupl` 150. The agent loop (§6.3), gates (§7.3), debouncer (§7.1), and orchestrator (§7) are all pre-split to respect these limits.
+- **Context first.** `ctx context.Context` is the first parameter on every method that does I/O or can block. Never stored in a struct.
+- **Concurrency.** Every goroutine has an owner and a termination condition tied to a context or channel close. Shared state guarded by `sync.Mutex`; `go test -race` stays green.
+- **Lint gate.** `golangci-lint`, `go vet`, `gosec`, and the thresholds in `.golangci.yml` are enforced. No `//nolint` directives in non-generated code.
+
+Anywhere this spec conflicts with `coding-conventions.md` or `CLAUDE.md`, those files win. Fixes should be made to the spec, not to the conventions.
+
+---
+
+## 17. Open questions (to confirm with interviewer)
 
 - Is DeepSeek an acceptable stand-in for OpenAI via base-URL override, or should we assume OpenAI will be used?
 - Should `AUTO_RESPONSE_ENABLED` default to on or off for the demo?
