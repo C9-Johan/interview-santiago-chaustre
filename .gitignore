@@ -212,3 +212,14 @@ tags
 
 # End of https://www.toptal.com/developers/gitignore/api/go,visualstudiocode,goland,macos,vim
 
+# Project-specific: override global "plans/" ignore so the superpowers spec +
+# plan pair stays tracked together (docs/superpowers/specs/ + plans/).
+!docs/superpowers/plans/
+!docs/superpowers/plans/**
+
+# Project-specific
+/data/
+/coverage.out
+/tmp/
+!.env.example
+
