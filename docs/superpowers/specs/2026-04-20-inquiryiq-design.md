@@ -23,7 +23,6 @@ Ship a Go service that:
 - UI / admin console.
 - Production deployment.
 - Multi-pod scale-out (single-process is fine for the slice; the interfaces permit it).
-- Cross-conversation or cross-guest memory.
 - Real JSON-schema-strict tool calls (DeepSeek doesn't honor full JSON-schema mode; we validate in Go).
 
 ### Evaluation criteria it targets (from CHALLENGE.md §3)
@@ -286,6 +285,10 @@ type EscalationStore interface {
 type ConversationMemoryStore interface {
     Get(ctx context.Context, k ConversationKey) (ConversationMemoryRecord, error)
     Update(ctx context.Context, k ConversationKey, mut func(*ConversationMemoryRecord)) error
+    // ListByGuest returns all memory records for the same guestID, newest UpdatedAt first.
+    // Used to feed cross-conversation guest context (prior stays, recurring asks,
+    // escalation history) into the classifier's advisory prompt input.
+    ListByGuest(ctx context.Context, guestID string, limit int) ([]ConversationMemoryRecord, error)
 }
 
 type ConversationAliasStore interface {
@@ -360,6 +363,8 @@ type Escalation struct {
 
 type ConversationMemoryRecord struct {
     ConversationKey    ConversationKey
+    GuestID            string            // stable across conversations for the same guest on the same platform
+    Platform           string            // "airbnb2" | "bookingCom" | "vrbo" | "manual" | "direct"
     LastSummary        string
     LastSummaryPostID  string
     KnownEntities      ExtractedEntities
@@ -618,10 +623,13 @@ conversation_language: {{conversation.language}}
 listing (if known): {{listing.title_or_blank}}
 reservation: {check_in, check_out, confirmation_code}
 
-known_from_prior_turns (advisory, may be stale):
+guest_profile (cross-conversation, advisory — may be empty):
+"{{guest_profile_paragraph_or_blank}}"
+
+known_from_prior_turns (this conversation, advisory, may be stale):
 {{known_entities_summary_or_blank}}
 
-prior_thread_summary (older messages, if any):
+prior_thread_summary (older messages in this conversation, if any):
 "{{layer-1 summary or blank}}"
 
 prior_thread (last {{THREAD_CONTEXT_WINDOW=10}} non-system, oldest -> newest):
@@ -631,6 +639,8 @@ prior_thread (last {{THREAD_CONTEXT_WINDOW=10}} non-system, oldest -> newest):
 guest_turn (classify THIS):
 {{#each turn.messages}}{{body}}\n{{/each}}
 ```
+
+The `guest_profile` block is the Layer 4 compressed cross-conversation memory (§8.2.1). Classifier prompt is already instructed that such prior-state blocks are advisory and must not be treated as still valid without re-confirmation — that rule applies equally to `guest_profile`.
 
 ### 5.5 Source-of-truth split
 - LLM emits `next_action`, but `domain/gate.go` re-derives the routing decision from the other fields. LLM is advisory; Go is authoritative. Disagreement is logged.
@@ -806,10 +816,35 @@ Applied to reply body in Gate step 9. False positives are acceptable — they es
 ### 8.1 Canonicalization (v1: identity; v2-ready)
 Transport layer never leaks raw `conversation._id`. Every downstream component receives a `ConversationKey` resolved once by `ConversationResolver`. v1 impl is identity (`raw -> ConversationKey(raw)`) with a nil alias store. v2 plugs in `sqlite.Aliases` without touching call sites.
 
-### 8.2 Memory (three layers)
+### 8.2 Memory (four layers — per-conversation plus cross-conversation)
+
 - **Layer 1 (context window):** Classifier/generator user messages include the last `THREAD_CONTEXT_WINDOW=10` non-system messages. Older messages are collapsed into a one-paragraph summary by `ConversationMemory.Summary`, cached per `(k, lastSummarizedPostID)`.
 - **Layer 2 (tool):** `get_conversation_history` lets the generator pull older messages on demand when the current turn references prior context not in the window. Counts toward `maxTurns` budget.
-- **Layer 3 (memory store):** `ConversationMemoryStore` holds `ConversationMemoryRecord` per canonical key — last summary, accumulated `ExtractedEntities`, `AdditionalSignals`, last classification, last auto-send/escalation timestamps, escalation reason tail. Populated on every completed turn; fed into the classifier as `known_from_prior_turns` advisory context. Classifier prompt is explicit that it's prior-turn state, not the current turn, and must not be treated as still valid without re-confirmation.
+- **Layer 3 (per-conversation store):** `ConversationMemoryStore` holds `ConversationMemoryRecord` per canonical key — last summary, accumulated `ExtractedEntities`, `AdditionalSignals`, last classification, last auto-send/escalation timestamps, escalation reason tail. Populated on every completed turn; fed into the classifier as `known_from_prior_turns` advisory context.
+- **Layer 4 (cross-conversation guest memory):** The same `ConversationMemoryStore` is indexable by `GuestID` via `ListByGuest`. On every turn, after resolving the `ConversationKey`, the orchestrator also looks up the last `GUEST_MEMORY_LIMIT=5` records for the same `GuestID` across other conversations and compresses them into a short **guest profile** string that is included in the classifier and generator user messages. This is what lets the LLM recognize patterns across separate inquiries — recurring guests, escalation-heavy relationships, already-answered questions.
+
+#### 8.2.1 Guest-profile compression (Layer 4 detail)
+A helper in `internal/application/processinquiry/guestprofile.go`:
+
+```go
+// buildGuestProfile compresses up to N prior memory records for the same guest
+// into a single advisory paragraph. Pure function — no LLM call.
+func buildGuestProfile(records []domain.ConversationMemoryRecord) string {
+    // Up to 300 chars. Includes:
+    //   - number of prior conversations on this platform
+    //   - total auto-sends vs. escalations
+    //   - distinct escalation reasons observed (top 3)
+    //   - carryable typed entities (e.g., "usually travels with pets=true")
+    //   - most recent trip_occasion / group_type signals from AdditionalSignals
+}
+```
+
+The classifier prompt gets a new advisory block (`guest_profile:`) with the same "prior-state, advisory only, do not treat as still valid" guardrails that apply to the per-conversation `known_from_prior_turns`. Same block is surfaced to the generator so C.L.O.S.E.R. personalization can reference it (e.g., "welcome back, Sarah" style, but only when the LLM has high confidence).
+
+#### 8.2.2 Guest identity and platform scoping
+`GuestID` is sourced from `conversation.guestId` in the webhook — stable per OTA per guest. We **do not** attempt to merge guests across platforms in v1 (Alice on Airbnb vs. Alice on Booking would have distinct `guestId`s and distinct memory buckets). Cross-platform guest linking is v2 TODO and slots in behind the same `ListByGuest` interface if we later add an alias table.
+
+A guest on Platform X inquiring about a listing on the same platform sees Layer 4 enabled. Pre-booking inquiries (no reservation, no `guestId`) skip Layer 4 gracefully — the orchestrator passes an empty `guest_profile` to the classifier.
 
 ---
 
@@ -873,7 +908,7 @@ All retry budgets are env-configurable.
 ```
 PORT                            :8080
 LOG_LEVEL                       info
-AUTO_RESPONSE_ENABLED           true
+AUTO_RESPONSE_ENABLED           true   # demo-oriented default — ops can flip off via env in real deployments
 
 GUESTY_WEBHOOK_SECRET           <required>
 SVIX_MAX_CLOCK_DRIFT_SECONDS    300
@@ -886,6 +921,8 @@ GUESTY_TOKEN                    dev
 GUESTY_TIMEOUT_MS               3000
 GUESTY_RETRIES                  3
 
+# LLM — DeepSeek is the v1 default per the confirmed provider decision.
+# go-openai works against DeepSeek unchanged with BaseURL set.
 LLM_BASE_URL                    https://api.deepseek.com/v1
 LLM_API_KEY                     <required>
 LLM_MODEL_CLASSIFIER            deepseek-chat
@@ -897,15 +934,24 @@ LLM_AGENT_MAX_TURNS             4
 CONFIDENCE_CLASSIFIER_MIN       0.65
 CONFIDENCE_GENERATOR_MIN        0.70
 THREAD_CONTEXT_WINDOW           10
+GUEST_MEMORY_LIMIT              5      # Layer-4 cross-conversation prior records per guest
 
 DATA_DIR                        ./data
+
+# Auto-replay demo mode (see §13.1) — off in production, on in demos.
+AUTO_REPLAY_ON_BOOT             false
+AUTO_REPLAY_FIXTURES_DIR        ./fixtures/webhooks
+AUTO_REPLAY_DELAY_MS            500    # stagger between fixtures so logs are readable
+AUTO_REPLAY_EXECUTE             false  # if true, actually POST the note; else dry-run
 ```
 
 All values loaded into one `Config` struct in `cmd/server/main.go`, printed redacted at startup.
 
 ---
 
-## 13. Replay CLI
+## 13. Replay CLI and auto-replay demo mode
+
+### 13.1 Replay CLI (operator tool)
 
 `cmd/replay/main.go`:
 
@@ -915,7 +961,27 @@ All values loaded into one `Config` struct in `cmd/server/main.go`, printed reda
 ./replay <postId> --execute  # actually POST the note to Mockoon
 ./replay --since 1h          # re-process everything in the last hour
 ./replay --escalations-only  # only records that previously escalated
+./replay --fixtures-dir ./fixtures/webhooks  # replay every JSON file in a directory
 ```
+
+### 13.2 Auto-replay on boot (demo mode)
+
+When `AUTO_REPLAY_ON_BOOT=true`, the server — after the HTTP listener is ready — spawns a single goroutine that iterates `AUTO_REPLAY_FIXTURES_DIR` and feeds each `*.json` fixture through the pipeline with a `AUTO_REPLAY_DELAY_MS` stagger between them. This lets an interviewer run `make demo` and watch classifications, tool calls, gate decisions, and outbound notes scroll through the logs without any manual curl.
+
+Implementation lives in `internal/application/processinquiry/autoreplay.go`:
+
+```go
+// RunAutoReplay reads fixtures from dir, maps each to domain.Message + Conversation
+// via the transport mapper, and invokes processinquiry.UseCase.Run for each one.
+// Respects ctx cancellation. Never panics — logs and continues past bad fixtures.
+func RunAutoReplay(ctx context.Context, cfg AutoReplayConfig, orch *processinquiry.UseCase, log *slog.Logger) error
+```
+
+Same pipeline, same gates, same outbound calls — the only differences vs. a live webhook:
+- Svix signature verification is skipped (fixtures come from our own tree, not the wire).
+- `AUTO_REPLAY_EXECUTE=false` routes `guesty.PostNote` to a dry-run logger; `=true` calls the real (Mockoon-backed) client.
+
+This is the primary way to demo the service without a live Guesty feed. It shares the replay mapping / dry-run plumbing with the CLI — so the two stay behavior-identical.
 
 Replay:
 - skips Svix signature verify (raw body came from our own file, trusted),
@@ -946,7 +1012,7 @@ Replay:
 - `sqlite.ConversationAliasStore` + admin merge endpoint.
 - `Notifier` interface (Slack / PagerDuty) for escalations.
 - Per-listing auto-response toggle overrides.
-- Cross-conversation (per-`guestId`) memory.
+- Cross-platform guest linking (merging `guestId` across Airbnb / Booking / VRBO for the same human). v1 scopes guest memory per-platform.
 - Outcome feedback loop: later turn invalidating prior extraction → memory record marked "contradicted" for classifier audit.
 - OTLP traces, Prometheus metrics.
 - Prompt / tool versioning + shadow-mode rollout.
@@ -975,9 +1041,15 @@ Anywhere this spec conflicts with `coding-conventions.md` or `CLAUDE.md`, those 
 
 ---
 
-## 17. Open questions (to confirm with interviewer)
+## 17. Decisions recorded
 
-- Is DeepSeek an acceptable stand-in for OpenAI via base-URL override, or should we assume OpenAI will be used?
-- Should `AUTO_RESPONSE_ENABLED` default to on or off for the demo?
+Resolved during spec review — retained here so future readers see the reasoning.
+
+- **LLM provider:** DeepSeek via the OpenAI-compatible base-URL override. go-openai works unchanged with `cfg.BaseURL = "https://api.deepseek.com/v1"`. Swapping to real OpenAI (or any other OpenAI-compatible provider) is an env change, not a code change.
+- **`AUTO_RESPONSE_ENABLED` default:** `true`. Demo-oriented — the interviewer should see auto-sends without flipping a flag. Real deployments flip it off via env; the ops toggle is a single boolean.
+- **Auto-replay demo mode:** added. `AUTO_REPLAY_ON_BOOT=true` feeds the pre-generated fixtures through the pipeline at startup so `make demo` produces visible output end-to-end without any manual curl.
+
+## 18. Remaining open questions
+
 - Are there labeled historical inquiries we can use to calibrate the classifier thresholds, or are the 0.65/0.70 defaults fine for the slice?
-- Should replay `--execute` be gated behind an additional env var (defense in depth against accidental prod sends)?
+- Should replay `--execute` (and `AUTO_REPLAY_EXECUTE=true`) be gated behind an additional "not in prod" env var for defense in depth? Proposed: yes, a `DEMO_MODE=true` guard that must be present for either flag to take effect.
