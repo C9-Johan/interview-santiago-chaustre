@@ -6,16 +6,19 @@ linters:
     - bodyclose
     - cyclop
     - dupl
+    - errcheck
     - errorlint
     - funlen
     - gocognit
     - goconst
     - gocritic
     - gosec
+    - govet
     - maintidx
     - nestif
     - prealloc
     - revive
+    - staticcheck
   settings:
     cyclop:
       max-complexity: 30
@@ -31,6 +34,9 @@ linters:
       min-len: 3
       min-occurrences: 3
     gocritic:
+      enabled-checks:
+        - hugeParam
+        - rangeValCopy
       settings:
         hugeParam:
           sizeThreshold: 256
