@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	nethttp "net/http"
-	"strings"
+	"time"
 
 	"github.com/chaustre/inquiryiq/internal/application/classify"
 	"github.com/chaustre/inquiryiq/internal/application/decide"
@@ -18,57 +18,25 @@ import (
 	"github.com/chaustre/inquiryiq/internal/infrastructure/guesty"
 	"github.com/chaustre/inquiryiq/internal/infrastructure/langsmith"
 	"github.com/chaustre/inquiryiq/internal/infrastructure/llm"
-	"github.com/chaustre/inquiryiq/internal/infrastructure/store/filestore"
-	"github.com/chaustre/inquiryiq/internal/infrastructure/store/memstore"
+	"github.com/chaustre/inquiryiq/internal/infrastructure/store"
 	"github.com/chaustre/inquiryiq/internal/infrastructure/telemetry"
 	transporthttp "github.com/chaustre/inquiryiq/internal/transport/http"
 )
 
-// TODO: this wiring duplicates cmd/server/main.go. Extract into
-// internal/infrastructure/wire once a third call site appears.
-
 type deps struct {
-	orch         *processinquiry.UseCase
-	webhooks     *filestore.Webhooks
-	classes      *filestore.Classifications
-	escFile      *filestore.Escalations
-	escRing      *memstore.EscalationRing
-	memoryCloser func() error
-	guesty       repository.GuestyClient
+	orch   *processinquiry.UseCase
+	stores *store.Bundle
+	guesty repository.GuestyClient
 }
 
 func (d *deps) close(log *slog.Logger) {
-	if err := d.webhooks.Close(); err != nil {
-		log.Warn("webhook_store_close_failed", slog.String("err", err.Error()))
-	}
-	if err := d.classes.Close(); err != nil {
-		log.Warn("classifications_store_close_failed", slog.String("err", err.Error()))
-	}
-	if err := d.escFile.Close(); err != nil {
-		log.Warn("escalations_store_close_failed", slog.String("err", err.Error()))
-	}
-	if d.memoryCloser != nil {
-		if err := d.memoryCloser(); err != nil {
-			log.Warn("memory_store_close_failed", slog.String("err", err.Error()))
-		}
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	d.stores.LogClosers(ctx, log)
 }
 
-func buildDeps(cfg config.Config, log *slog.Logger, f flags) (*deps, error) {
-	webhooks, err := filestore.NewWebhooks(cfg.DataDir)
-	if err != nil {
-		return nil, fmt.Errorf("webhooks store: %w", err)
-	}
-	classes, err := filestore.NewClassifications(cfg.DataDir)
-	if err != nil {
-		return nil, fmt.Errorf("classifications store: %w", err)
-	}
-	escFile, err := filestore.NewEscalations(cfg.DataDir)
-	if err != nil {
-		return nil, fmt.Errorf("escalations store: %w", err)
-	}
-	escRing := memstore.NewEscalationRing(500, escFile)
-	memory, memoryCloser, err := buildMemory(cfg)
+func buildDeps(ctx context.Context, cfg *config.Config, log *slog.Logger, f flags) (*deps, error) {
+	stores, err := store.Build(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -106,34 +74,15 @@ func buildDeps(cfg config.Config, log *slog.Logger, f flags) (*deps, error) {
 		Classifier:      classifier,
 		Generator:       generator,
 		Guesty:          guestyClient,
-		Idempotency:     memstore.NewIdempotency(),
-		Escalations:     escRing,
-		Memory:          memory,
-		Classifications: classes,
+		Idempotency:     stores.Idempotency,
+		Escalations:     stores.Escalations,
+		Memory:          stores.Memory,
+		Classifications: stores.Classifications,
 		Toggles:         domain.Toggles{AutoResponseEnabled: cfg.AutoResponseEnabled},
 		Thresholds:      decide.Thresholds{ClassifierMin: cfg.ClassifierMinConf, GeneratorMin: cfg.GeneratorMinConf},
 		Log:             log,
 	})
-	return &deps{
-		orch:         orch,
-		webhooks:     webhooks,
-		classes:      classes,
-		escFile:      escFile,
-		escRing:      escRing,
-		memoryCloser: memoryCloser,
-		guesty:       guestyClient,
-	}, nil
-}
-
-func buildMemory(cfg config.Config) (repository.ConversationMemoryStore, func() error, error) {
-	if strings.EqualFold(cfg.StoreBackend, "memory") {
-		return memstore.NewConversationMemory(), func() error { return nil }, nil
-	}
-	fs, err := filestore.NewConversationMemory(cfg.DataDir)
-	if err != nil {
-		return nil, nil, fmt.Errorf("conversation memory store: %w", err)
-	}
-	return fs, fs.Close, nil
+	return &deps{orch: orch, stores: stores, guesty: guestyClient}, nil
 }
 
 func rawToInput(raw []byte) (processinquiry.Input, error) {

@@ -87,18 +87,18 @@ func run() error {
 	}
 	log := obs.NewLogger(os.Stdout, slog.LevelInfo)
 
-	deps, err := buildDeps(cfg, log, f)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	deps, err := buildDeps(ctx, &cfg, log, f)
 	if err != nil {
 		return err
 	}
 	defer deps.close(log)
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
 	switch {
 	case f.fixturesDir != "":
-		return runFixtures(ctx, cfg, deps, f, log)
+		return runFixtures(ctx, &cfg, deps, f, log)
 	case f.since > 0:
 		return runSince(ctx, deps, f, log)
 	default:

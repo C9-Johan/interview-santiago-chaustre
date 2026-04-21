@@ -12,7 +12,7 @@ import (
 )
 
 func runPostID(ctx context.Context, d *deps, f flags, log *slog.Logger) error {
-	rec, err := d.webhooks.Get(ctx, f.postID)
+	rec, err := d.stores.Webhooks.Get(ctx, f.postID)
 	if err != nil {
 		return fmt.Errorf("lookup postID %q: %w", f.postID, err)
 	}
@@ -20,11 +20,11 @@ func runPostID(ctx context.Context, d *deps, f flags, log *slog.Logger) error {
 }
 
 func runSince(ctx context.Context, d *deps, f flags, log *slog.Logger) error {
-	records, err := d.webhooks.Since(ctx, f.since)
+	records, err := d.stores.Webhooks.Since(ctx, f.since)
 	if err != nil {
 		return fmt.Errorf("list since %s: %w", f.since, err)
 	}
-	filter, err := buildSinceFilter(ctx, d.escRing, f.escalationsOnly)
+	filter, err := buildSinceFilter(ctx, d.stores.Escalations, f.escalationsOnly)
 	if err != nil {
 		return err
 	}
@@ -51,7 +51,7 @@ func buildSinceFilter(ctx context.Context, esc repository.EscalationStore, only 
 	return func(postID string) bool { return set[postID] }, nil
 }
 
-func runFixtures(ctx context.Context, cfg config.Config, d *deps, f flags, log *slog.Logger) error {
+func runFixtures(ctx context.Context, cfg *config.Config, d *deps, f flags, log *slog.Logger) error {
 	return processinquiry.RunAutoReplay(ctx, processinquiry.AutoReplayConfig{
 		Dir:   f.fixturesDir,
 		Delay: cfg.AutoReplayDelay,

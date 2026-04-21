@@ -40,8 +40,16 @@ type Config struct {
 	ThreadContextWindow int
 	GuestMemoryLimit    int
 
-	DataDir      string
-	StoreBackend string
+	DataDir            string
+	StoreBackend       string
+	IdempotencyBackend string
+
+	MongoURI      string
+	MongoDatabase string
+
+	RedisAddr     string
+	RedisPassword string
+	RedisIdemTTL  time.Duration
 
 	OTELServiceName    string
 	OTELServiceVersion string
@@ -93,8 +101,16 @@ func Load() (Config, error) {
 		ThreadContextWindow: getInt("THREAD_CONTEXT_WINDOW", 10),
 		GuestMemoryLimit:    getInt("GUEST_MEMORY_LIMIT", 5),
 
-		DataDir:      getenv("DATA_DIR", "./data"),
-		StoreBackend: getenv("STORE_BACKEND", "file"),
+		DataDir:            getenv("DATA_DIR", "./data"),
+		StoreBackend:       getenv("STORE_BACKEND", "file"),
+		IdempotencyBackend: getenv("IDEMPOTENCY_BACKEND", "memory"),
+
+		MongoURI:      os.Getenv("MONGO_URI"),
+		MongoDatabase: getenv("MONGO_DATABASE", "inquiryiq"),
+
+		RedisAddr:     os.Getenv("REDIS_ADDR"),
+		RedisPassword: os.Getenv("REDIS_PASSWORD"),
+		RedisIdemTTL:  getDurationSec("REDIS_IDEMPOTENCY_TTL_SECONDS", 48*60*60),
 
 		OTELServiceName:    getenv("OTEL_SERVICE_NAME", "inquiryiq"),
 		OTELServiceVersion: getenv("OTEL_SERVICE_VERSION", "dev"),

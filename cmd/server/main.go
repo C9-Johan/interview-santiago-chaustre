@@ -29,8 +29,7 @@ import (
 	"github.com/chaustre/inquiryiq/internal/infrastructure/langsmith"
 	"github.com/chaustre/inquiryiq/internal/infrastructure/llm"
 	"github.com/chaustre/inquiryiq/internal/infrastructure/obs"
-	"github.com/chaustre/inquiryiq/internal/infrastructure/store/filestore"
-	"github.com/chaustre/inquiryiq/internal/infrastructure/store/memstore"
+	"github.com/chaustre/inquiryiq/internal/infrastructure/store"
 	"github.com/chaustre/inquiryiq/internal/infrastructure/telemetry"
 	transporthttp "github.com/chaustre/inquiryiq/internal/transport/http"
 )
@@ -53,7 +52,7 @@ func run() error {
 		return fmt.Errorf("config: %w", err)
 	}
 	log := obs.NewLogger(os.Stdout, parseLevel(cfg.LogLevel))
-	logRedactedConfig(log, cfg)
+	logRedactedConfig(log, &cfg)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -80,17 +79,17 @@ func run() error {
 	}
 	defer shutdownLangsmith(ls, log)
 
-	app, err := buildApp(cfg, log, tel, ls)
+	app, err := buildApp(ctx, &cfg, log, tel, ls)
 	if err != nil {
 		return err
 	}
 	defer app.closeStores(log)
 
 	if cfg.AutoReplayOnBoot {
-		go startAutoReplay(ctx, cfg, app, log)
+		go startAutoReplay(ctx, &cfg, app, log)
 	}
 
-	return serve(ctx, cfg, app, log)
+	return serve(ctx, &cfg, app, log)
 }
 
 type appBundle struct {
@@ -98,16 +97,13 @@ type appBundle struct {
 	debouncer     *debouncer.Timed
 	handler       *transporthttp.Handler
 	router        nethttp.Handler
-	webhookStore  *filestore.Webhooks
-	classStore    *filestore.Classifications
-	escFileStore  *filestore.Escalations
-	memoryCloser  func() error
+	stores        *store.Bundle
 	fixtureMapper processinquiry.FixtureMapper
 	guesty        repository.GuestyClient
 }
 
-func buildApp(cfg config.Config, log *slog.Logger, tel *telemetry.Provider, ls *langsmith.Provider) (*appBundle, error) {
-	stores, err := buildStores(cfg)
+func buildApp(ctx context.Context, cfg *config.Config, log *slog.Logger, tel *telemetry.Provider, ls *langsmith.Provider) (*appBundle, error) {
+	stores, err := store.Build(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -131,10 +127,10 @@ func buildApp(cfg config.Config, log *slog.Logger, tel *telemetry.Provider, ls *
 		Classifier:      classifier,
 		Generator:       generator,
 		Guesty:          gclient,
-		Idempotency:     stores.idempotency,
-		Escalations:     stores.escRing,
-		Memory:          stores.memory,
-		Classifications: stores.classifications,
+		Idempotency:     stores.Idempotency,
+		Escalations:     stores.Escalations,
+		Memory:          stores.Memory,
+		Classifications: stores.Classifications,
 		Toggles:         domain.Toggles{AutoResponseEnabled: cfg.AutoResponseEnabled},
 		Thresholds:      decide.Thresholds{ClassifierMin: cfg.ClassifierMinConf, GeneratorMin: cfg.GeneratorMinConf},
 		Log:             log,
@@ -143,9 +139,9 @@ func buildApp(cfg config.Config, log *slog.Logger, tel *telemetry.Provider, ls *
 	deb := debouncer.NewTimed(cfg.DebounceWindow, cfg.DebounceMaxWait, clk, makeFlushFn(orch, gclient, log))
 
 	handler := transporthttp.NewHandler(transporthttp.Handler{
-		Webhooks:         stores.webhooks,
-		EscalationsStore: stores.escRing,
-		Idempotency:      stores.idempotency,
+		Webhooks:         stores.Webhooks,
+		EscalationsStore: stores.Escalations,
+		Idempotency:      stores.Idempotency,
 		Resolver:         identityResolver{},
 		Debouncer:        deb,
 		SvixSecret:       cfg.GuestyWebhookSecret,
@@ -158,86 +154,19 @@ func buildApp(cfg config.Config, log *slog.Logger, tel *telemetry.Provider, ls *
 		debouncer:     deb,
 		handler:       handler,
 		router:        telemetry.HTTPMiddleware(cfg.OTELServiceName, transporthttp.NewRouter(handler)),
-		webhookStore:  stores.webhooks,
-		classStore:    stores.classifications,
-		escFileStore:  stores.escFile,
-		memoryCloser:  stores.memoryCloser,
+		stores:        stores,
 		fixtureMapper: fixtureMapperFromConfig(),
 		guesty:        gclient,
 	}, nil
 }
 
-type storeBundle struct {
-	webhooks        *filestore.Webhooks
-	classifications *filestore.Classifications
-	escFile         *filestore.Escalations
-	escRing         *memstore.EscalationRing
-	idempotency     *memstore.Idempotency
-	memory          repository.ConversationMemoryStore
-	memoryCloser    func() error
-}
-
-func buildStores(cfg config.Config) (storeBundle, error) {
-	webhooks, err := filestore.NewWebhooks(cfg.DataDir)
-	if err != nil {
-		return storeBundle{}, fmt.Errorf("webhooks store: %w", err)
-	}
-	classifications, err := filestore.NewClassifications(cfg.DataDir)
-	if err != nil {
-		return storeBundle{}, fmt.Errorf("classifications store: %w", err)
-	}
-	escFile, err := filestore.NewEscalations(cfg.DataDir)
-	if err != nil {
-		return storeBundle{}, fmt.Errorf("escalations store: %w", err)
-	}
-	memory, memoryCloser, err := buildMemoryStore(cfg)
-	if err != nil {
-		return storeBundle{}, err
-	}
-	return storeBundle{
-		webhooks:        webhooks,
-		classifications: classifications,
-		escFile:         escFile,
-		escRing:         memstore.NewEscalationRing(500, escFile),
-		idempotency:     memstore.NewIdempotency(),
-		memory:          memory,
-		memoryCloser:    memoryCloser,
-	}, nil
-}
-
-// buildMemoryStore selects the ConversationMemory backend by cfg.StoreBackend.
-// "file" (default) returns a JSONL-backed store that survives restarts;
-// "memory" returns a process-local store for tests. Returns a closer that is
-// a no-op for the memory backend.
-func buildMemoryStore(cfg config.Config) (repository.ConversationMemoryStore, func() error, error) {
-	if strings.EqualFold(cfg.StoreBackend, "memory") {
-		return memstore.NewConversationMemory(), func() error { return nil }, nil
-	}
-	fs, err := filestore.NewConversationMemory(cfg.DataDir)
-	if err != nil {
-		return nil, nil, fmt.Errorf("conversation memory store: %w", err)
-	}
-	return fs, fs.Close, nil
-}
-
 func (a *appBundle) closeStores(log *slog.Logger) {
-	if err := a.webhookStore.Close(); err != nil {
-		log.Warn("webhook_store_close_failed", slog.String("err", err.Error()))
-	}
-	if err := a.classStore.Close(); err != nil {
-		log.Warn("classifications_store_close_failed", slog.String("err", err.Error()))
-	}
-	if err := a.escFileStore.Close(); err != nil {
-		log.Warn("escalations_store_close_failed", slog.String("err", err.Error()))
-	}
-	if a.memoryCloser != nil {
-		if err := a.memoryCloser(); err != nil {
-			log.Warn("memory_store_close_failed", slog.String("err", err.Error()))
-		}
-	}
+	sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	a.stores.LogClosers(sctx, log)
 }
 
-func serve(ctx context.Context, cfg config.Config, app *appBundle, log *slog.Logger) error {
+func serve(ctx context.Context, cfg *config.Config, app *appBundle, log *slog.Logger) error {
 	srv := &nethttp.Server{
 		Addr:              cfg.Port,
 		Handler:           app.router,
@@ -353,7 +282,7 @@ func fixtureMapperFromConfig() processinquiry.FixtureMapper {
 	}
 }
 
-func startAutoReplay(ctx context.Context, cfg config.Config, app *appBundle, log *slog.Logger) {
+func startAutoReplay(ctx context.Context, cfg *config.Config, app *appBundle, log *slog.Logger) {
 	err := processinquiry.RunAutoReplay(ctx, processinquiry.AutoReplayConfig{
 		Dir:   cfg.AutoReplayFixturesDir,
 		Delay: cfg.AutoReplayDelay,
@@ -392,7 +321,7 @@ func parseLevel(s string) slog.Level {
 	}
 }
 
-func logRedactedConfig(log *slog.Logger, cfg config.Config) {
+func logRedactedConfig(log *slog.Logger, cfg *config.Config) {
 	log.Info("config_loaded",
 		slog.String("port", cfg.Port),
 		slog.String("log_level", cfg.LogLevel),
