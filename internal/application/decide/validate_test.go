@@ -27,7 +27,6 @@ func TestValidateReply(t *testing.T) {
 		{"sell_cert_no_avail", domain.Reply{Body: good.Body, CloserBeats: fullBeats, UsedTools: []domain.ToolCall{{Name: "get_listing"}}}, []string{"sell_certainty_without_availability"}},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := decide.ValidateReply(tc.reply)
