@@ -8,6 +8,7 @@ require (
 	github.com/langchain-ai/langsmith-go v0.4.0
 	github.com/redis/go-redis/v9 v9.18.0
 	github.com/sashabaranov/go-openai v1.41.2
+	github.com/sony/gobreaker/v2 v2.4.0
 	github.com/xeipuuv/gojsonschema v1.2.0
 	go.mongodb.org/mongo-driver/v2 v2.5.1
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.68.0

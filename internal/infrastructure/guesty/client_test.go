@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sony/gobreaker/v2"
+
 	"github.com/chaustre/inquiryiq/internal/infrastructure/guesty"
 )
 
@@ -272,5 +274,72 @@ func TestClientNoRetryOn4xx(t *testing.T) {
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("404 should not retry; got %d calls", calls.Load())
+	}
+}
+
+// TestCircuitBreakerTripsOnRepeatedFailure confirms the breaker opens after
+// the configured failure threshold and subsequent calls fail fast with
+// ErrCircuitOpen without touching the network.
+func TestCircuitBreakerTripsOnRepeatedFailure(t *testing.T) {
+	t.Parallel()
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer srv.Close()
+
+	br := gobreaker.NewCircuitBreaker[any](gobreaker.Settings{
+		Name:        "guesty-test",
+		MaxRequests: 1,
+		Interval:    time.Minute,
+		Timeout:     time.Minute,
+		ReadyToTrip: func(c gobreaker.Counts) bool { return c.ConsecutiveFailures >= 2 },
+	})
+	c := guesty.NewClient(srv.URL, "dev", time.Second, 0, guesty.WithCircuitBreaker(br))
+
+	// First two calls exhaust retries (retries=0) and surface ErrRetriesExhausted.
+	for range 2 {
+		_, err := c.GetListing(context.Background(), "L1")
+		if err == nil {
+			t.Fatal("expected error while breaker still closed")
+		}
+		if errors.Is(err, guesty.ErrCircuitOpen) {
+			t.Fatalf("breaker opened too early: %v", err)
+		}
+	}
+	hitsBefore := calls.Load()
+
+	// Third call should short-circuit — breaker is open, no HTTP request fires.
+	_, err := c.GetListing(context.Background(), "L1")
+	if !errors.Is(err, guesty.ErrCircuitOpen) {
+		t.Fatalf("expected ErrCircuitOpen, got %v", err)
+	}
+	if hits := calls.Load(); hits != hitsBefore {
+		t.Fatalf("breaker did not prevent downstream call: hits %d -> %d", hitsBefore, hits)
+	}
+}
+
+// TestCircuitBreakerNilAllowsUnboundedFailures confirms passing
+// WithCircuitBreaker(nil) disables fail-fast — used by tests that need to
+// exercise retry exhaustion repeatedly without breaker interference.
+func TestCircuitBreakerNilAllowsUnboundedFailures(t *testing.T) {
+	t.Parallel()
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer srv.Close()
+
+	c := guesty.NewClient(srv.URL, "dev", time.Second, 0, guesty.WithCircuitBreaker(nil))
+	for range 10 {
+		_, err := c.GetListing(context.Background(), "L1")
+		if errors.Is(err, guesty.ErrCircuitOpen) {
+			t.Fatalf("nil breaker must never short-circuit: %v", err)
+		}
+	}
+	if got := calls.Load(); got != 10 {
+		t.Fatalf("want 10 downstream calls with breaker disabled, got %d", got)
 	}
 }

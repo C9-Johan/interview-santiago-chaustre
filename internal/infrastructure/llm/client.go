@@ -9,9 +9,19 @@ import (
 	"net/http"
 
 	openai "github.com/sashabaranov/go-openai"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/chaustre/inquiryiq/internal/domain/repository"
 )
+
+// tracerName identifies spans this package emits so LangSmith, Tempo, and
+// Grafana can group them as "LLM calls" separately from transport spans.
+const tracerName = "github.com/chaustre/inquiryiq/llm"
+
+func tracer() trace.Tracer { return otel.Tracer(tracerName) }
 
 // Compile-time assertion that *Client satisfies the exported LLMClient
 // contract; a signature drift on either side becomes a build error.
@@ -48,7 +58,65 @@ func NewClient(baseURL, apiKey string, opts ...Option) *Client {
 	return &Client{c: openai.NewClientWithConfig(cfg)}
 }
 
-// Chat forwards the request to the underlying SDK.
+// Chat forwards the request to the underlying SDK and decorates the surrounding
+// span with the semantic attributes LangSmith surfaces in its run viewer
+// (model, temperature, token usage, finish reason, tool-call count). Errors
+// are recorded as span events so operators see which turn failed and why.
+// Latency is measured implicitly via span start/end.
 func (c *Client) Chat(ctx context.Context, req openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error) {
-	return c.c.CreateChatCompletion(ctx, req)
+	ctx, span := tracer().Start(ctx, "llm.chat", trace.WithAttributes(
+		attribute.String("llm.vendor", "openai-compatible"),
+		attribute.String("llm.model", req.Model),
+		attribute.Float64("llm.temperature", float64(req.Temperature)),
+		attribute.Int("llm.max_tokens", req.MaxCompletionTokens),
+		attribute.Int("llm.message_count", len(req.Messages)),
+		attribute.Int("llm.tool_count", len(req.Tools)),
+		attribute.String("llm.response_format", responseFormatName(req.ResponseFormat)),
+	))
+	defer span.End()
+
+	resp, err := c.c.CreateChatCompletion(ctx, req)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "chat_completion_failed")
+		return resp, err
+	}
+	annotateResponse(span, resp)
+	return resp, nil
+}
+
+// annotateResponse mirrors LangSmith's GenAI attribute names so runs line up
+// with its native instrumentation on the ingest side.
+func annotateResponse(span trace.Span, resp openai.ChatCompletionResponse) {
+	span.SetAttributes(
+		attribute.Int("llm.prompt_tokens", resp.Usage.PromptTokens),
+		attribute.Int("llm.completion_tokens", resp.Usage.CompletionTokens),
+		attribute.Int("llm.total_tokens", resp.Usage.TotalTokens),
+		attribute.Int("llm.choice_count", len(resp.Choices)),
+		attribute.String("llm.id", resp.ID),
+	)
+	if len(resp.Choices) == 0 {
+		span.SetStatus(codes.Error, "no_choices_returned")
+		return
+	}
+	first := resp.Choices[0]
+	span.SetAttributes(
+		attribute.String("llm.finish_reason", string(first.FinishReason)),
+		attribute.Int("llm.tool_calls.count", len(first.Message.ToolCalls)),
+	)
+	for i := range first.Message.ToolCalls {
+		tc := first.Message.ToolCalls[i]
+		span.AddEvent("llm.tool_call", trace.WithAttributes(
+			attribute.String("tool.name", tc.Function.Name),
+			attribute.String("tool.call_id", tc.ID),
+			attribute.Int("tool.arguments_bytes", len(tc.Function.Arguments)),
+		))
+	}
+}
+
+func responseFormatName(f *openai.ChatCompletionResponseFormat) string {
+	if f == nil {
+		return ""
+	}
+	return string(f.Type)
 }

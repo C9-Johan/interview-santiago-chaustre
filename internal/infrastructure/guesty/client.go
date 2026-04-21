@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sony/gobreaker/v2"
 
 	"github.com/chaustre/inquiryiq/internal/domain"
 	"github.com/chaustre/inquiryiq/internal/domain/mappers"
@@ -31,7 +34,15 @@ type Client struct {
 	httpClient  *http.Client
 	retries     int
 	baseBackoff time.Duration
+	breaker     *gobreaker.CircuitBreaker[any]
 }
+
+// ErrCircuitOpen is returned when the breaker has tripped and is refusing
+// downstream calls to fail fast. Callers can errors.Is-match this sentinel to
+// distinguish "Guesty is down" from a transport/status error that might
+// succeed on the next request. Wraps gobreaker.ErrOpenState so existing
+// gobreaker-aware telemetry keeps working.
+var ErrCircuitOpen = fmt.Errorf("guesty circuit breaker open: %w", gobreaker.ErrOpenState)
 
 // Option mutates a Client after the defaults are applied. Use WithHTTPClient
 // to inject a pre-wrapped transport (e.g. otelhttp) so outgoing calls are
@@ -48,6 +59,33 @@ func WithHTTPClient(hc *http.Client) Option {
 	}
 }
 
+// WithCircuitBreaker installs a custom breaker. Passing nil disables the
+// breaker entirely, which is useful in tests that do not want fail-fast
+// behavior after repeated synthetic errors. The default breaker (installed by
+// NewClient when this option is absent) trips after 5 consecutive post-retry
+// failures, stays open for 30s, then allows one probe request.
+func WithCircuitBreaker(b *gobreaker.CircuitBreaker[any]) Option {
+	return func(c *Client) {
+		c.breaker = b
+	}
+}
+
+// defaultBreaker returns the production breaker: 5 consecutive failures trips
+// it, 30s cooling period before half-open, 1 probe request while half-open.
+// Counts reset every 60s while closed so a slow trickle of sporadic errors
+// never accumulates toward tripping.
+func defaultBreaker() *gobreaker.CircuitBreaker[any] {
+	return gobreaker.NewCircuitBreaker[any](gobreaker.Settings{
+		Name:        "guesty",
+		MaxRequests: 1,
+		Interval:    60 * time.Second,
+		Timeout:     30 * time.Second,
+		ReadyToTrip: func(c gobreaker.Counts) bool {
+			return c.ConsecutiveFailures >= 5
+		},
+	})
+}
+
 // NewClient constructs a Client against baseURL using token for bearer auth.
 // timeout applies per-request; retries shapes how many extra attempts are made
 // on 429 / 5xx / transport errors (0 = no retries, only the initial attempt).
@@ -58,6 +96,7 @@ func NewClient(baseURL, token string, timeout time.Duration, retries int, opts .
 		httpClient:  &http.Client{Timeout: timeout},
 		retries:     retries,
 		baseBackoff: 200 * time.Millisecond,
+		breaker:     defaultBreaker(),
 	}
 	for _, o := range opts {
 		o(c)
@@ -239,6 +278,11 @@ func conversationFromWire(wire wireConversation, thread []domain.Message) domain
 // exhaustion the returned error wraps both ErrRetriesExhausted and the last
 // observed cause (transport error or synthesized status error), so callers
 // can inspect with errors.Is / errors.As.
+//
+// When a circuit breaker is configured (the default), the whole retry loop
+// runs inside breaker.Execute: a success closes the breaker, a terminal
+// failure after retries is counted toward tripping. Once open, further calls
+// return ErrCircuitOpen immediately without touching the network.
 func (c *Client) do(ctx context.Context, method, path string, body, out any) error {
 	// any: body is any JSON-marshalable Go value; out is a user-supplied
 	// pointer. Both are JSON-boundary use cases permitted by conventions.
@@ -246,6 +290,21 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	if err != nil {
 		return err
 	}
+	work := func() (any, error) {
+		return nil, c.doWithRetries(ctx, method, path, bodyBytes, out)
+	}
+	if c.breaker == nil {
+		_, err := work()
+		return err
+	}
+	_, err = c.breaker.Execute(work)
+	if errors.Is(err, gobreaker.ErrOpenState) || errors.Is(err, gobreaker.ErrTooManyRequests) {
+		return fmt.Errorf("%w: %s %s", ErrCircuitOpen, method, path)
+	}
+	return err
+}
+
+func (c *Client) doWithRetries(ctx context.Context, method, path string, bodyBytes []byte, out any) error {
 	var lastErr error
 	for attempt := 0; attempt <= c.retries; attempt++ {
 		resp, sendErr := c.sendOnce(ctx, method, path, bodyBytes)
@@ -254,7 +313,6 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 			return attemptErr
 		}
 		lastErr = attemptErr
-		// Last attempt: no point sleeping — skip the wait and exit.
 		if attempt == c.retries {
 			break
 		}

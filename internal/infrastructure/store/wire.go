@@ -124,6 +124,9 @@ func (b *Bundle) buildMongo(ctx context.Context, cfg *config.Config) error {
 		return fmt.Errorf("mongo connect: %w", err)
 	}
 	b.add("mongo_client", client.Close)
+	if err := mongostore.Bootstrap(ctx, client); err != nil {
+		return fmt.Errorf("mongo bootstrap: %w", err)
+	}
 	webhooks, err := mongostore.NewWebhooks(ctx, client)
 	if err != nil {
 		return err
