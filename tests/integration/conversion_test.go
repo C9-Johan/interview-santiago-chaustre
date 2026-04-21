@@ -164,7 +164,7 @@ func bootConversionService(
 		Memory:          memory,
 		Classifications: classes,
 		Conversions:     tracker,
-		Toggles:         domain.Toggles{AutoResponseEnabled: true},
+		Toggles:         processinquiry.StaticToggles{AutoResponseEnabled: true},
 		Thresholds:      decide.Thresholds{ClassifierMin: 0.65, GeneratorMin: 0.70},
 		Log:             log,
 	})
@@ -202,7 +202,7 @@ func bootConversionService(
 		Log:          log,
 		Now:          func() time.Time { return time.Now().UTC() },
 	}
-	router := transporthttp.NewRouter(handler, rh)
+	router := transporthttp.NewRouter(handler, rh, nil)
 	srv := httptest.NewServer(router)
 	t.Cleanup(srv.Close)
 	t.Cleanup(deb.Stop)

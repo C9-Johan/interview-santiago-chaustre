@@ -73,6 +73,12 @@ type Config struct {
 	AutoReplayFixturesDir string
 	AutoReplayDelay       time.Duration
 	AutoReplayExecute     bool
+
+	// AdminToken is the shared bearer token that guards /admin/* endpoints.
+	// When empty the admin routes are disabled entirely — there is no
+	// "unauthenticated admin" mode by design, because the auto-response
+	// kill-switch is incident-critical and cannot be flipped anonymously.
+	AdminToken string
 }
 
 // ErrMissingRequired is returned by Load when a required env var is unset.
@@ -134,6 +140,8 @@ func Load() (Config, error) {
 		AutoReplayFixturesDir: getenv("AUTO_REPLAY_FIXTURES_DIR", "./fixtures/webhooks"),
 		AutoReplayDelay:       getDurationMs("AUTO_REPLAY_DELAY_MS", 500),
 		AutoReplayExecute:     getBool("AUTO_REPLAY_EXECUTE", false),
+
+		AdminToken: os.Getenv("ADMIN_TOKEN"),
 	}
 	if c.GuestyWebhookSecret == "" {
 		return c, fmt.Errorf("%w: GUESTY_WEBHOOK_SECRET", ErrMissingRequired)

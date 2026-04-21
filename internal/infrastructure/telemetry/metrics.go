@@ -19,8 +19,9 @@ const meterName = "github.com/chaustre/inquiryiq"
 // Counters holds the service's conversion metrics. Both counters are safe to
 // call on the noop meter — when metrics are disabled the Add calls no-op.
 type Counters struct {
-	Managed   metric.Int64Counter
-	Converted metric.Int64Counter
+	Managed     metric.Int64Counter
+	Converted   metric.Int64Counter
+	ToggleFlips metric.Int64Counter
 }
 
 // Histograms holds the service's LLM confidence distributions. Buckets are
@@ -77,7 +78,10 @@ func mustCounters(m metric.Meter) *Counters {
 	converted, _ := m.Int64Counter("inquiryiq.conversations.converted",
 		metric.WithDescription("Bot-managed conversations that ended in a confirmed reservation"),
 	)
-	return &Counters{Managed: managed, Converted: converted}
+	flips, _ := m.Int64Counter("inquiryiq.admin.toggle_flips",
+		metric.WithDescription("Operator-driven runtime toggle flips via /admin/*"),
+	)
+	return &Counters{Managed: managed, Converted: converted, ToggleFlips: flips}
 }
 
 // confidenceBuckets brackets 0..1 around the auto-send gate thresholds so

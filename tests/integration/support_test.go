@@ -39,6 +39,7 @@ import (
 	"github.com/chaustre/inquiryiq/internal/infrastructure/guesty"
 	"github.com/chaustre/inquiryiq/internal/infrastructure/llm"
 	"github.com/chaustre/inquiryiq/internal/infrastructure/store/memstore"
+	"github.com/chaustre/inquiryiq/internal/infrastructure/togglesource"
 	transporthttp "github.com/chaustre/inquiryiq/internal/transport/http"
 )
 
@@ -275,7 +276,11 @@ type bootedService struct {
 	debouncer   *debouncer.Timed
 	escalations repository.EscalationStore
 	memory      repository.ConversationMemoryStore
+	toggles     *togglesource.Source
+	adminToken  string
 }
+
+const integrationAdminToken = "integration-admin"
 
 // bootService builds the full application graph on top of configured Guesty
 // and LLM base URLs, then wraps the router in httptest.NewServer. The flush
@@ -302,6 +307,7 @@ func bootService(
 	memory := memstore.NewConversationMemory()
 	classes := &nopClassifications{}
 	escRing := memstore.NewEscalationRing(100, nil)
+	toggles := togglesource.New(domain.Toggles{AutoResponseEnabled: true}, nil, nil)
 
 	orch := processinquiry.New(processinquiry.Deps{
 		Classifier:      classifier,
@@ -311,7 +317,7 @@ func bootService(
 		Escalations:     escRing,
 		Memory:          memory,
 		Classifications: classes,
-		Toggles:         domain.Toggles{AutoResponseEnabled: true},
+		Toggles:         toggles,
 		Thresholds:      decide.Thresholds{ClassifierMin: 0.65, GeneratorMin: 0.70},
 		Log:             log,
 	})
@@ -342,7 +348,8 @@ func bootService(
 		SvixMaxDrift:     5 * time.Minute,
 		Log:              log,
 	})
-	router := transporthttp.NewRouter(handler, nil)
+	admin := &transporthttp.AdminHandler{Source: toggles, Token: integrationAdminToken, Log: log}
+	router := transporthttp.NewRouter(handler, nil, admin)
 	srv := httptest.NewServer(router)
 	t.Cleanup(srv.Close)
 	t.Cleanup(deb.Stop)
@@ -351,6 +358,8 @@ func bootService(
 		debouncer:   deb,
 		escalations: escRing,
 		memory:      memory,
+		toggles:     toggles,
+		adminToken:  integrationAdminToken,
 	}
 }
 

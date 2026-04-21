@@ -49,6 +49,22 @@ type replyCritic interface {
 	Review(ctx context.Context, in reviewreply.Input) reviewreply.Verdict
 }
 
+// togglesProvider is the runtime source of the auto-send toggles. The
+// orchestrator reads Current() on every turn so an operator kill-switch flip
+// takes effect immediately. Satisfied by *togglesource.Source in production
+// and by StaticToggles in tests.
+type togglesProvider interface {
+	Current() domain.Toggles
+}
+
+// StaticToggles is the test/config-driven adapter that always returns the same
+// domain.Toggles value. Production wiring uses togglesource.Source instead so
+// the admin kill-switch can flip state at runtime.
+type StaticToggles domain.Toggles
+
+// Current implements togglesProvider on StaticToggles.
+func (s StaticToggles) Current() domain.Toggles { return domain.Toggles(s) }
+
 // Deps bundles every collaborator the orchestrator consumes. Construction is
 // the wiring responsibility of cmd/server; UseCase itself does not know how
 // any collaborator is built.
@@ -63,7 +79,7 @@ type Deps struct {
 	Conversions     conversionTracker
 	Confidence      confidenceRecorder
 	Critic          replyCritic
-	Toggles         domain.Toggles
+	Toggles         togglesProvider
 	Thresholds      decide.Thresholds
 	Log             *slog.Logger
 }
@@ -116,7 +132,7 @@ func (u *UseCase) Run(ctx context.Context, in Input) {
 		attribute.String("classification.primary_code", string(cls.PrimaryCode)),
 		attribute.Float64("classification.confidence", cls.Confidence),
 	)
-	gate1 := decide.PreGenerate(cls, u.d.Toggles, u.d.Thresholds.ClassifierMin)
+	gate1 := decide.PreGenerate(cls, u.d.Toggles.Current(), u.d.Thresholds.ClassifierMin)
 	if !gate1.AutoSend {
 		span.SetAttributes(attribute.String("decision.pre_generate", gate1.Reason))
 		u.recordEscalation(ctx, in, cls, nil, gate1)
@@ -136,7 +152,7 @@ func (u *UseCase) gateAndSend(ctx context.Context, in Input, cls domain.Classifi
 	defer span.End()
 	issues := decide.ValidateReply(reply)
 	issues = append(issues, u.criticIssues(ctx, in, cls, reply)...)
-	final := decide.Decide(cls, reply, issues, u.d.Toggles, u.d.Thresholds)
+	final := decide.Decide(cls, reply, issues, u.d.Toggles.Current(), u.d.Thresholds)
 	span.SetAttributes(
 		attribute.Bool("decision.auto_send", final.AutoSend),
 		attribute.String("decision.reason", final.Reason),

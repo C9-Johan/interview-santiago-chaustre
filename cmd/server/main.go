@@ -33,6 +33,7 @@ import (
 	"github.com/chaustre/inquiryiq/internal/infrastructure/obs"
 	"github.com/chaustre/inquiryiq/internal/infrastructure/store"
 	"github.com/chaustre/inquiryiq/internal/infrastructure/telemetry"
+	"github.com/chaustre/inquiryiq/internal/infrastructure/togglesource"
 	transporthttp "github.com/chaustre/inquiryiq/internal/transport/http"
 )
 
@@ -132,6 +133,12 @@ func buildApp(ctx context.Context, cfg *config.Config, log *slog.Logger, tel *te
 
 	tracker := trackconversion.New(stores.Conversions, telemetry.NewConversionRecorder(tel.Counters()), log)
 
+	toggles := togglesource.New(
+		domain.Toggles{AutoResponseEnabled: cfg.AutoResponseEnabled},
+		log,
+		tel.Counters().ToggleFlips,
+	)
+
 	orch := processinquiry.New(processinquiry.Deps{
 		Classifier:      classifier,
 		Generator:       generator,
@@ -143,7 +150,7 @@ func buildApp(ctx context.Context, cfg *config.Config, log *slog.Logger, tel *te
 		Conversions:     tracker,
 		Confidence:      telemetry.NewConfidenceRecorder(tel.Histograms()),
 		Critic:          critic,
-		Toggles:         domain.Toggles{AutoResponseEnabled: cfg.AutoResponseEnabled},
+		Toggles:         toggles,
 		Thresholds:      decide.Thresholds{ClassifierMin: cfg.ClassifierMinConf, GeneratorMin: cfg.GeneratorMinConf},
 		Log:             log,
 	})
@@ -167,12 +174,17 @@ func buildApp(ctx context.Context, cfg *config.Config, log *slog.Logger, tel *te
 		Log:          log,
 		Now:          func() time.Time { return time.Now().UTC() },
 	}
+	adminHandler := &transporthttp.AdminHandler{
+		Source: toggles,
+		Token:  cfg.AdminToken,
+		Log:    log,
+	}
 
 	return &appBundle{
 		orch:          orch,
 		debouncer:     deb,
 		handler:       handler,
-		router:        telemetry.HTTPMiddleware(cfg.OTELServiceName, transporthttp.NewRouter(handler, reservationHandler)),
+		router:        telemetry.HTTPMiddleware(cfg.OTELServiceName, transporthttp.NewRouter(handler, reservationHandler, adminHandler)),
 		stores:        stores,
 		fixtureMapper: fixtureMapperFromConfig(),
 		guesty:        gclient,

@@ -78,7 +78,7 @@ func buildDeps(ctx context.Context, cfg *config.Config, log *slog.Logger, f flag
 		Escalations:     stores.Escalations,
 		Memory:          stores.Memory,
 		Classifications: stores.Classifications,
-		Toggles:         domain.Toggles{AutoResponseEnabled: cfg.AutoResponseEnabled},
+		Toggles:         processinquiry.StaticToggles{AutoResponseEnabled: cfg.AutoResponseEnabled},
 		Thresholds:      decide.Thresholds{ClassifierMin: cfg.ClassifierMinConf, GeneratorMin: cfg.GeneratorMinConf},
 		Log:             log,
 	})

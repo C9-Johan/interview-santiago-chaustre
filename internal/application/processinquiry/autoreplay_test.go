@@ -30,7 +30,7 @@ func autoReplayDeps(t *testing.T) processinquiry.Deps {
 		Escalations:     &fakeEscalations{},
 		Memory:          newFakeMemory(),
 		Classifications: newFakeClassifications(),
-		Toggles:         domain.Toggles{AutoResponseEnabled: true},
+		Toggles:         processinquiry.StaticToggles{AutoResponseEnabled: true},
 		Thresholds:      decide.Thresholds{ClassifierMin: 0.65, GeneratorMin: 0.70},
 		Log:             discardLogger(),
 	}

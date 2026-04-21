@@ -259,7 +259,7 @@ func newDeps(t *testing.T, classifierJSON string, reply domain.Reply, withAvaila
 		Escalations:     esc,
 		Memory:          mem,
 		Classifications: newFakeClassifications(),
-		Toggles:         domain.Toggles{AutoResponseEnabled: true},
+		Toggles:         processinquiry.StaticToggles{AutoResponseEnabled: true},
 		Thresholds:      decide.Thresholds{ClassifierMin: 0.65, GeneratorMin: 0.70},
 		Log:             slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
@@ -406,7 +406,7 @@ func TestRunAutoDisabledEscalates(t *testing.T) {
 	t.Parallel()
 	clsJSON := `{"primary_code":"G1","confidence":0.95,"extracted_entities":{},"risk_flag":false,"next_action":"generate_reply","reasoning":"book"}`
 	deps, g, esc, _, _ := newDeps(t, clsJSON, domain.Reply{}, false, nil)
-	deps.Toggles.AutoResponseEnabled = false
+	deps.Toggles = processinquiry.StaticToggles{AutoResponseEnabled: false}
 
 	processinquiry.New(deps).Run(context.Background(), validInput())
 
