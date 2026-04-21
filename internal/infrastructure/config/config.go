@@ -48,6 +48,10 @@ type Config struct {
 	OTELEndpoint       string
 	OTELInsecure       bool
 
+	LangSmithAPIKey   string
+	LangSmithProject  string
+	LangSmithEndpoint string
+
 	AutoReplayOnBoot      bool
 	AutoReplayFixturesDir string
 	AutoReplayDelay       time.Duration
@@ -96,6 +100,10 @@ func Load() (Config, error) {
 		OTELServiceVersion: getenv("OTEL_SERVICE_VERSION", "dev"),
 		OTELEndpoint:       os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
 		OTELInsecure:       getBool("OTEL_EXPORTER_OTLP_INSECURE", true),
+
+		LangSmithAPIKey:   os.Getenv("LANGSMITH_API_KEY"),
+		LangSmithProject:  getenv("LANGSMITH_PROJECT", "inquiryiq"),
+		LangSmithEndpoint: os.Getenv("LANGSMITH_ENDPOINT"),
 
 		AutoReplayOnBoot:      getBool("AUTO_REPLAY_ON_BOOT", false),
 		AutoReplayFixturesDir: getenv("AUTO_REPLAY_FIXTURES_DIR", "./fixtures/webhooks"),

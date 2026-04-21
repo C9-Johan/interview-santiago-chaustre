@@ -16,6 +16,7 @@ import (
 	"github.com/chaustre/inquiryiq/internal/domain/repository"
 	"github.com/chaustre/inquiryiq/internal/infrastructure/config"
 	"github.com/chaustre/inquiryiq/internal/infrastructure/guesty"
+	"github.com/chaustre/inquiryiq/internal/infrastructure/langsmith"
 	"github.com/chaustre/inquiryiq/internal/infrastructure/llm"
 	"github.com/chaustre/inquiryiq/internal/infrastructure/store/filestore"
 	"github.com/chaustre/inquiryiq/internal/infrastructure/store/memstore"
@@ -72,8 +73,19 @@ func buildDeps(cfg config.Config, log *slog.Logger, f flags) (*deps, error) {
 		return nil, err
 	}
 
+	ls, err := langsmith.Setup(nil, langsmith.Config{
+		APIKey:      cfg.LangSmithAPIKey,
+		ProjectName: cfg.LangSmithProject,
+		ServiceName: cfg.OTELServiceName,
+		Endpoint:    cfg.LangSmithEndpoint,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("langsmith: %w", err)
+	}
 	llmClient := maybeTraceLLM(
-		llm.NewClient(cfg.LLMBaseURL, cfg.LLMAPIKey, llm.WithHTTPClient(telemetry.WrapHTTPClient(nil))),
+		llm.NewClient(cfg.LLMBaseURL, cfg.LLMAPIKey,
+			llm.WithHTTPClient(ls.WrapOpenAIHTTPClient(telemetry.WrapHTTPClient(nil))),
+		),
 		f.trace, log,
 	)
 	guestyClient := maybeNoopPost(

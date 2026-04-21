@@ -26,6 +26,7 @@ import (
 	"github.com/chaustre/inquiryiq/internal/infrastructure/config"
 	"github.com/chaustre/inquiryiq/internal/infrastructure/debouncer"
 	"github.com/chaustre/inquiryiq/internal/infrastructure/guesty"
+	"github.com/chaustre/inquiryiq/internal/infrastructure/langsmith"
 	"github.com/chaustre/inquiryiq/internal/infrastructure/llm"
 	"github.com/chaustre/inquiryiq/internal/infrastructure/obs"
 	"github.com/chaustre/inquiryiq/internal/infrastructure/store/filestore"
@@ -68,7 +69,18 @@ func run() error {
 	}
 	defer shutdownTelemetry(tel, log)
 
-	app, err := buildApp(cfg, log, tel)
+	ls, err := langsmith.Setup(tel.SDKProvider(), langsmith.Config{
+		APIKey:      cfg.LangSmithAPIKey,
+		ProjectName: cfg.LangSmithProject,
+		ServiceName: cfg.OTELServiceName,
+		Endpoint:    cfg.LangSmithEndpoint,
+	})
+	if err != nil {
+		return fmt.Errorf("langsmith: %w", err)
+	}
+	defer shutdownLangsmith(ls, log)
+
+	app, err := buildApp(cfg, log, tel, ls)
 	if err != nil {
 		return err
 	}
@@ -94,7 +106,7 @@ type appBundle struct {
 	guesty        repository.GuestyClient
 }
 
-func buildApp(cfg config.Config, log *slog.Logger, tel *telemetry.Provider) (*appBundle, error) {
+func buildApp(cfg config.Config, log *slog.Logger, tel *telemetry.Provider, ls *langsmith.Provider) (*appBundle, error) {
 	stores, err := buildStores(cfg)
 	if err != nil {
 		return nil, err
@@ -106,7 +118,7 @@ func buildApp(cfg config.Config, log *slog.Logger, tel *telemetry.Provider) (*ap
 		guesty.WithHTTPClient(telemetry.WrapHTTPClient(&nethttp.Client{Timeout: cfg.GuestyTimeout})),
 	)
 	llmClient := llm.NewClient(cfg.LLMBaseURL, cfg.LLMAPIKey,
-		llm.WithHTTPClient(telemetry.WrapHTTPClient(nil)),
+		llm.WithHTTPClient(ls.WrapOpenAIHTTPClient(telemetry.WrapHTTPClient(nil))),
 	)
 
 	classifier, err := classify.New(llmClient, cfg.ModelClassifier, cfg.ClassifierTimeout)
@@ -359,6 +371,14 @@ func shutdownTelemetry(tel *telemetry.Provider, log *slog.Logger) {
 	}
 }
 
+func shutdownLangsmith(ls *langsmith.Provider, log *slog.Logger) {
+	sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := ls.Shutdown(sctx); err != nil {
+		log.Warn("langsmith_shutdown_failed", slog.String("err", err.Error()))
+	}
+}
+
 func parseLevel(s string) slog.Level {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "debug":
@@ -388,6 +408,8 @@ func logRedactedConfig(log *slog.Logger, cfg config.Config) {
 		slog.String("store_backend", cfg.StoreBackend),
 		slog.String("otel_endpoint", cfg.OTELEndpoint),
 		slog.String("otel_service_name", cfg.OTELServiceName),
+		slog.String("langsmith_project", cfg.LangSmithProject),
+		slog.Bool("langsmith_enabled", cfg.LangSmithAPIKey != ""),
 		slog.Bool("auto_replay_on_boot", cfg.AutoReplayOnBoot),
 		slog.String("guesty_webhook_secret", "***"),
 		slog.String("llm_api_key", "***"),

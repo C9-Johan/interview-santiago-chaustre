@@ -65,6 +65,21 @@ func (p *Provider) Enabled() bool {
 	return ok
 }
 
+// SDKProvider returns the underlying SDK tracer provider for callers that need
+// to register additional span processors (e.g. the LangSmith exporter). Returns
+// nil when tracing is disabled so callers can detect the no-op path.
+func (p *Provider) SDKProvider() *sdktrace.TracerProvider {
+	tp, _ := p.tp.(*sdktrace.TracerProvider)
+	return tp
+}
+
+// TracerProvider returns the underlying provider (typed as the trace interface
+// so noop and SDK variants share one accessor). Use SDKProvider when you need
+// to register span processors.
+func (p *Provider) TracerProvider() trace.TracerProvider {
+	return p.tp
+}
+
 // Setup builds a Provider from cfg. When cfg.Endpoint is empty it returns a
 // no-op provider immediately; otherwise it installs an OTLP/HTTP exporter
 // with a batch span processor, registers it as the global tracer, and returns
