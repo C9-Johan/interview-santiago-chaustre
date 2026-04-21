@@ -60,6 +60,26 @@ make lint                # golangci-lint, Sonar-style gate
 The integration tests auto-skip with a helpful message when `mockoon-cli` is
 not on `PATH` — they're gated, never hard dependencies.
 
+### Eval — Stage-A classifier regression
+
+`eval/golden_set.json` is a labeled set of guest turns (one per Traffic Light
+code, plus language, burst, priority-arbiter, prompt-injection, and the three
+risk-flag categories). `make eval` builds the `cmd/eval` CLI and runs every
+case through the real classifier against your configured LLM, printing
+per-case failures and aggregate accuracy. Exits non-zero on any failing case,
+so it's CI-gateable.
+
+```sh
+export LLM_API_KEY=sk-xxx
+make eval                        # 1.0 accuracy gate (strict)
+./tmp/eval -min-accuracy 0.9     # triage mode: pass if >=90% of primary codes match
+./tmp/eval -set eval/golden_set.json  # explicit set path
+```
+
+The unit tests in `internal/application/eval/` exercise the harness with a
+fake classifier, so the harness itself is covered without burning an LLM
+quota.
+
 ### Production-grade local stack (optional)
 
 Bring up Mongo + Valkey + their UIs + the full Alloy/Tempo/Prometheus/Grafana
@@ -142,7 +162,40 @@ tests/
   integration/               end-to-end tests with a real Mockoon subprocess + scripted fake LLM
 ```
 
-### Request flow
+### Request flow at a glance
+
+```mermaid
+flowchart TD
+    W([Guesty webhook POST /webhooks/guesty/message-received])
+    W --> H[Svix sig verify<br/>+ 5min drift<br/>+ dedup on postId]
+    H -- invalid --> R401([401/400])
+    H -- duplicate --> A202dup([202 duplicate])
+    H -- valid --> Buf[Per-conversation debouncer<br/>15s window, 60s max-wait]
+    H --> Ack([202 ack])
+    Buf -- host replied / cancel --> Cancel([skip turn])
+    Buf -- flush --> Inj{promptsafety.Detect<br/>injection patterns?}
+    Inj -- yes --> EscInj[Escalation<br/>prompt_injection_suspected]
+    Inj -- no --> Cls[Stage A: Classify<br/>LLM + JSON schema<br/>retry-once-on-invalid]
+    Cls --> Pri[EnforcePriority §6<br/>RED > Y5 > Y2 > ... > GRAY]
+    Pri --> G1{GATE 1: PreGenerate<br/>low-risk code?<br/>risk_flag? confidence >= 0.65?}
+    G1 -- no --> EscG1[Escalation]
+    G1 -- yes --> Gen[Stage B: Generate<br/>agent loop:<br/>get_listing / check_availability /<br/>get_conversation_history]
+    Gen --> Crit[Reply critic<br/>CLOSER + restricted + factual<br/>fail-closed on LLM error]
+    Crit --> Val[Validate reply<br/>hedging, beats,<br/>restricted content]
+    Val --> G2{GATE 2: Decide<br/>critic pass? validator clean?<br/>generator confidence >= 0.70?}
+    G2 -- no --> EscG2[Escalation]
+    G2 -- yes --> Post[POST /communication/conversations/:id/send-message<br/>type: note]
+    Post --> Mark[trackconversion.MarkManaged<br/>counter: conversations.managed]
+    Mark --> Close[Update memory<br/>+ idempotency complete]
+    EscInj --> Close
+    EscG1 --> Close
+    EscG2 --> Close
+
+    RU([Guesty webhook POST /webhooks/guesty/reservation-updated])
+    RU --> Conv{status transitioned<br/>to confirmed<br/>on a managed reservation?}
+    Conv -- yes --> CConv[counter:<br/>conversations.converted]
+    Conv -- no --> Skip([no-op])
+```
 
 1. **HTTP handler** reads the raw body once (needed for signature verification),
    verifies the Svix `v1,<base64-hmac-sha256>` signature against the

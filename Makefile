@@ -1,5 +1,5 @@
 .PHONY: fmt lint vet test test-integration build run mock-up demo check \
-	stack-up stack-down stack-logs stack-status
+	stack-up stack-down stack-logs stack-status eval
 
 # COMPOSE defaults to `podman compose` (rootless-friendly). Override to your
 # preferred binary: make stack-up COMPOSE="docker compose"
@@ -20,6 +20,11 @@ test-integration:
 build:
 	go build -o ./tmp/server ./cmd/server
 	go build -o ./tmp/replay ./cmd/replay
+	go build -o ./tmp/eval   ./cmd/eval
+# Stage-A classifier regression run. Requires LLM_API_KEY; override -set to
+# point at a different labeled file. Exits non-zero on any failing case.
+eval: build
+	./tmp/eval -set eval/golden_set.json
 run: build
 	./tmp/server
 mock-up:
