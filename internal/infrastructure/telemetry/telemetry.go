@@ -40,8 +40,10 @@ type Config struct {
 // Tracer is safe to use even when the exporter is disabled — it returns a
 // no-op tracer and a no-op shutdown.
 type Provider struct {
-	tp       trace.TracerProvider
-	shutdown func(context.Context) error
+	tp            trace.TracerProvider
+	shutdown      func(context.Context) error
+	meterShutdown func(context.Context) error
+	counters      *Counters
 }
 
 // Tracer returns the instrumentation tracer shared by all call sites in the
@@ -50,12 +52,22 @@ func (p *Provider) Tracer() trace.Tracer {
 	return p.tp.Tracer(tracerName)
 }
 
-// Shutdown flushes any pending spans. Safe to call on the no-op provider.
+// Shutdown flushes any pending spans and metric reads. Safe to call on the
+// no-op provider. The first non-nil error from either shutdown is returned;
+// any remaining shutdowns still run.
 func (p *Provider) Shutdown(ctx context.Context) error {
-	if p.shutdown == nil {
-		return nil
+	var first error
+	if p.shutdown != nil {
+		if err := p.shutdown(ctx); err != nil {
+			first = err
+		}
 	}
-	return p.shutdown(ctx)
+	if p.meterShutdown != nil {
+		if err := p.meterShutdown(ctx); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
 }
 
 // Enabled is true when an OTLP exporter was configured. Call sites can use it
@@ -86,16 +98,28 @@ func (p *Provider) TracerProvider() trace.TracerProvider {
 // the shutdown closer. Returning Setup success with a no-op provider is
 // intentional — it keeps callers unaware of whether tracing is actually on.
 func Setup(ctx context.Context, cfg Config) (*Provider, error) {
+	p := &Provider{}
+	if err := p.attachTracing(ctx, cfg); err != nil {
+		return nil, err
+	}
+	if err := p.attachMetrics(ctx, cfg); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+func (p *Provider) attachTracing(ctx context.Context, cfg Config) error {
 	if cfg.Endpoint == "" {
-		return &Provider{tp: noop.NewTracerProvider()}, nil
+		p.tp = noop.NewTracerProvider()
+		return nil
 	}
 	exp, err := newOTLPExporter(ctx, cfg)
 	if err != nil {
-		return nil, fmt.Errorf("otlp exporter: %w", err)
+		return fmt.Errorf("otlp exporter: %w", err)
 	}
 	res, err := buildResource(ctx, cfg)
 	if err != nil {
-		return nil, fmt.Errorf("otel resource: %w", err)
+		return fmt.Errorf("otel resource: %w", err)
 	}
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(exp, sdktrace.WithBatchTimeout(5*time.Second)),
@@ -106,7 +130,9 @@ func Setup(ctx context.Context, cfg Config) (*Provider, error) {
 		propagation.TraceContext{},
 		propagation.Baggage{},
 	))
-	return &Provider{tp: tp, shutdown: tp.Shutdown}, nil
+	p.tp = tp
+	p.shutdown = tp.Shutdown
+	return nil
 }
 
 func newOTLPExporter(ctx context.Context, cfg Config) (sdktrace.SpanExporter, error) {

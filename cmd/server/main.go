@@ -20,6 +20,7 @@ import (
 	"github.com/chaustre/inquiryiq/internal/application/decide"
 	"github.com/chaustre/inquiryiq/internal/application/generatereply"
 	"github.com/chaustre/inquiryiq/internal/application/processinquiry"
+	"github.com/chaustre/inquiryiq/internal/application/trackconversion"
 	"github.com/chaustre/inquiryiq/internal/domain"
 	"github.com/chaustre/inquiryiq/internal/domain/repository"
 	"github.com/chaustre/inquiryiq/internal/infrastructure/clock"
@@ -123,6 +124,8 @@ func buildApp(ctx context.Context, cfg *config.Config, log *slog.Logger, tel *te
 	}
 	generator := generatereply.New(llmClient, gclient, cfg.ModelGenerator, cfg.GeneratorTimeout, cfg.AgentMaxTurns)
 
+	tracker := trackconversion.New(stores.Conversions, telemetry.NewConversionRecorder(tel.Counters()), log)
+
 	orch := processinquiry.New(processinquiry.Deps{
 		Classifier:      classifier,
 		Generator:       generator,
@@ -131,6 +134,7 @@ func buildApp(ctx context.Context, cfg *config.Config, log *slog.Logger, tel *te
 		Escalations:     stores.Escalations,
 		Memory:          stores.Memory,
 		Classifications: stores.Classifications,
+		Conversions:     tracker,
 		Toggles:         domain.Toggles{AutoResponseEnabled: cfg.AutoResponseEnabled},
 		Thresholds:      decide.Thresholds{ClassifierMin: cfg.ClassifierMinConf, GeneratorMin: cfg.GeneratorMinConf},
 		Log:             log,
@@ -148,12 +152,19 @@ func buildApp(ctx context.Context, cfg *config.Config, log *slog.Logger, tel *te
 		SvixMaxDrift:     cfg.SvixMaxClockDrift,
 		Log:              log,
 	})
+	reservationHandler := &transporthttp.ReservationHandler{
+		Tracker:      tracker,
+		SvixSecret:   cfg.GuestyWebhookSecret,
+		SvixMaxDrift: cfg.SvixMaxClockDrift,
+		Log:          log,
+		Now:          func() time.Time { return time.Now().UTC() },
+	}
 
 	return &appBundle{
 		orch:          orch,
 		debouncer:     deb,
 		handler:       handler,
-		router:        telemetry.HTTPMiddleware(cfg.OTELServiceName, transporthttp.NewRouter(handler)),
+		router:        telemetry.HTTPMiddleware(cfg.OTELServiceName, transporthttp.NewRouter(handler, reservationHandler)),
 		stores:        stores,
 		fixtureMapper: fixtureMapperFromConfig(),
 		guesty:        gclient,

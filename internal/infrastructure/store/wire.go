@@ -26,6 +26,7 @@ type Bundle struct {
 	Escalations     repository.EscalationStore
 	Idempotency     repository.IdempotencyStore
 	Memory          repository.ConversationMemoryStore
+	Conversions     repository.ConversionStore
 
 	closers []namedCloser
 }
@@ -104,10 +105,16 @@ func (b *Bundle) buildFile(cfg *config.Config) error {
 		return err
 	}
 	b.add("conversation_memory_file", func(_ context.Context) error { return memoryCloser() })
+	conversions, err := filestore.NewConversions(cfg.DataDir)
+	if err != nil {
+		return fmt.Errorf("conversions store: %w", err)
+	}
+	b.add("conversions_file", func(_ context.Context) error { return conversions.Close() })
 	b.Webhooks = webhooks
 	b.Classifications = classifications
 	b.Escalations = memstore.NewEscalationRing(500, escFile)
 	b.Memory = memory
+	b.Conversions = conversions
 	return nil
 }
 
@@ -133,10 +140,15 @@ func (b *Bundle) buildMongo(ctx context.Context, cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
+	conversions, err := mongostore.NewConversions(ctx, client)
+	if err != nil {
+		return err
+	}
 	b.Webhooks = webhooks
 	b.Classifications = classifications
 	b.Escalations = escalations
 	b.Memory = memory
+	b.Conversions = conversions
 	return nil
 }
 

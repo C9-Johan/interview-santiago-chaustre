@@ -51,6 +51,17 @@ type ConversationMemoryStore interface {
 	ListByGuest(ctx context.Context, guestID string, limit int) ([]domain.ConversationMemoryRecord, error)
 }
 
+// ConversionStore records every bot-managed reservation and the eventual
+// terminal status it transitions to. Used by the conversion tracker to
+// compute bookings-per-bot-managed-inquiry and emit the managed/converted
+// OTEL counters.
+type ConversionStore interface {
+	MarkManaged(ctx context.Context, r domain.ManagedReservation) error
+	GetManaged(ctx context.Context, reservationID string) (domain.ManagedReservation, error)
+	RecordConversion(ctx context.Context, reservationID, status string, at time.Time) error
+	List(ctx context.Context, limit int) ([]domain.ManagedReservation, error)
+}
+
 // ConversationAliasStore supports merging conversations under one canonical
 // ConversationKey. v1 wires a nil impl (identity resolver); v2 drops in a
 // real store without changing callers.

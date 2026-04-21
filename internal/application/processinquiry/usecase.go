@@ -13,6 +13,7 @@ import (
 	"github.com/chaustre/inquiryiq/internal/application/classify"
 	"github.com/chaustre/inquiryiq/internal/application/decide"
 	"github.com/chaustre/inquiryiq/internal/application/generatereply"
+	"github.com/chaustre/inquiryiq/internal/application/trackconversion"
 	"github.com/chaustre/inquiryiq/internal/domain"
 	"github.com/chaustre/inquiryiq/internal/domain/repository"
 	"github.com/chaustre/inquiryiq/internal/infrastructure/obs"
@@ -23,6 +24,12 @@ import (
 const tracerName = "github.com/chaustre/inquiryiq/processinquiry"
 
 func tracer() trace.Tracer { return otel.Tracer(tracerName) }
+
+// conversionTracker is the narrow interface the orchestrator uses to record
+// bot-managed reservations. Satisfied by *trackconversion.UseCase.
+type conversionTracker interface {
+	MarkManaged(ctx context.Context, in trackconversion.ManagedInput)
+}
 
 // Deps bundles every collaborator the orchestrator consumes. Construction is
 // the wiring responsibility of cmd/server; UseCase itself does not know how
@@ -35,6 +42,7 @@ type Deps struct {
 	Escalations     repository.EscalationStore
 	Memory          repository.ConversationMemoryStore
 	Classifications repository.ClassificationStore
+	Conversions     conversionTracker
 	Toggles         domain.Toggles
 	Thresholds      decide.Thresholds
 	Log             *slog.Logger
@@ -117,8 +125,31 @@ func (u *UseCase) gateAndSend(ctx context.Context, in Input, cls domain.Classifi
 			Reason: "post_note_failed",
 			Detail: []string{err.Error()},
 		})
+		u.closeTurn(ctx, in, cls, &reply)
+		return
 	}
+	u.markManaged(ctx, in, cls)
 	u.closeTurn(ctx, in, cls, &reply)
+}
+
+func (u *UseCase) markManaged(ctx context.Context, in Input, cls domain.Classification) {
+	if u.d.Conversions == nil {
+		return
+	}
+	u.d.Conversions.MarkManaged(ctx, trackconversion.ManagedInput{
+		ReservationID:   firstReservationID(in.Conversation),
+		ConversationKey: in.Turn.Key,
+		GuestID:         in.Conversation.GuestID,
+		Platform:        in.Conversation.Integration.Platform,
+		PrimaryCode:     cls.PrimaryCode,
+	})
+}
+
+func firstReservationID(c domain.Conversation) string {
+	if len(c.Reservations) == 0 {
+		return ""
+	}
+	return c.Reservations[0].ID
 }
 
 func (u *UseCase) priorContext(ctx context.Context, in Input) domain.PriorContext {
