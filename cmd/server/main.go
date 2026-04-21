@@ -30,6 +30,7 @@ import (
 	"github.com/chaustre/inquiryiq/internal/infrastructure/clock"
 	"github.com/chaustre/inquiryiq/internal/infrastructure/config"
 	"github.com/chaustre/inquiryiq/internal/infrastructure/debouncer"
+	"github.com/chaustre/inquiryiq/internal/infrastructure/eventbus"
 	"github.com/chaustre/inquiryiq/internal/infrastructure/guesty"
 	"github.com/chaustre/inquiryiq/internal/infrastructure/langsmith"
 	"github.com/chaustre/inquiryiq/internal/infrastructure/llm"
@@ -107,6 +108,7 @@ type appBundle struct {
 	stores        *store.Bundle
 	fixtureMapper processinquiry.FixtureMapper
 	guesty        repository.GuestyClient
+	bus           *eventbus.Bus
 	shutdownCfg   shutdownConfig
 }
 
@@ -130,28 +132,25 @@ func buildApp(ctx context.Context, cfg *config.Config, log *slog.Logger, tel *te
 		llm.WithTokenRecorder(telemetry.NewTokenRecorder(tel.Counters())),
 	)
 
-	classifier, err := classify.New(llmClient, cfg.ModelClassifier, cfg.ClassifierTimeout)
+	useCases, err := buildUseCases(llmClient, gclient, cfg)
 	if err != nil {
-		return nil, fmt.Errorf("classify.New: %w", err)
-	}
-	generator := generatereply.New(llmClient, gclient, cfg.ModelGenerator, cfg.GeneratorTimeout, cfg.AgentMaxTurns)
-
-	critic, err := reviewreply.New(llmClient, cfg.ModelClassifier, cfg.ClassifierTimeout)
-	if err != nil {
-		return nil, fmt.Errorf("reviewreply.New: %w", err)
+		return nil, err
 	}
 
 	tracker := trackconversion.New(stores.Conversions, telemetry.NewConversionRecorder(tel.Counters()), log)
+
+	bus := eventbus.New(log, 1024)
+	startLogSubscribers(ctx, bus, log)
 
 	toggles := togglesource.New(
 		domain.Toggles{AutoResponseEnabled: cfg.AutoResponseEnabled},
 		log,
 		tel.Counters().ToggleFlips,
-	)
+	).WithEvents(bus)
 
 	orch := processinquiry.New(processinquiry.Deps{
-		Classifier:      classifier,
-		Generator:       generator,
+		Classifier:      useCases.classifier,
+		Generator:       useCases.generator,
 		Guesty:          gclient,
 		Idempotency:     stores.Idempotency,
 		Escalations:     stores.Escalations,
@@ -159,8 +158,9 @@ func buildApp(ctx context.Context, cfg *config.Config, log *slog.Logger, tel *te
 		Classifications: stores.Classifications,
 		Conversions:     tracker,
 		Confidence:      telemetry.NewConfidenceRecorder(tel.Histograms()),
-		Critic:          critic,
+		Critic:          useCases.critic,
 		Toggles:         toggles,
+		Events:          bus,
 		Thresholds:      decide.Thresholds{ClassifierMin: cfg.ClassifierMinConf, GeneratorMin: cfg.GeneratorMinConf},
 		Log:             log,
 	})
@@ -176,7 +176,7 @@ func buildApp(ctx context.Context, cfg *config.Config, log *slog.Logger, tel *te
 	}, makeFlushFn(orch, gclient, log))
 	pool.Start()
 
-	deb := debouncer.NewTimed(cfg.DebounceWindow, cfg.DebounceMaxWait, clk, enqueueFlushFn(pool, stores.Escalations, log))
+	deb := debouncer.NewTimed(cfg.DebounceWindow, cfg.DebounceMaxWait, clk, enqueueFlushFn(pool, stores.Escalations, bus, log))
 
 	handler := transporthttp.NewHandler(transporthttp.Handler{
 		Webhooks:         stores.Webhooks,
@@ -210,6 +210,7 @@ func buildApp(ctx context.Context, cfg *config.Config, log *slog.Logger, tel *te
 		stores:        stores,
 		fixtureMapper: fixtureMapperFromConfig(),
 		guesty:        gclient,
+		bus:           bus,
 		shutdownCfg:   shutdownConfig{dispatchTimeout: cfg.DispatchShutdownTimeout},
 	}, nil
 }
@@ -252,6 +253,11 @@ func shutdown(srv *nethttp.Server, app *appBundle, log *slog.Logger) error {
 		app.pool.Stop(poolCtx)
 		poolCancel()
 	}
+	if app.bus != nil {
+		if err := app.bus.Close(); err != nil {
+			log.WarnContext(context.Background(), "eventbus_close_failed", slog.String("err", err.Error()))
+		}
+	}
 	sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(sctx); err != nil {
@@ -261,13 +267,35 @@ func shutdown(srv *nethttp.Server, app *appBundle, log *slog.Logger) error {
 	return nil
 }
 
+// useCaseBundle groups the three LLM-backed use cases so buildApp passes
+// them by value instead of threading three positional returns through a
+// separate helper.
+type useCaseBundle struct {
+	classifier *classify.UseCase
+	generator  *generatereply.UseCase
+	critic     *reviewreply.UseCase
+}
+
+func buildUseCases(llmClient *llm.Client, gclient repository.GuestyClient, cfg *config.Config) (useCaseBundle, error) {
+	classifier, err := classify.New(llmClient, cfg.ModelClassifier, cfg.ClassifierTimeout)
+	if err != nil {
+		return useCaseBundle{}, fmt.Errorf("classify.New: %w", err)
+	}
+	generator := generatereply.New(llmClient, gclient, cfg.ModelGenerator, cfg.GeneratorTimeout, cfg.AgentMaxTurns)
+	critic, err := reviewreply.New(llmClient, cfg.ModelClassifier, cfg.ClassifierTimeout)
+	if err != nil {
+		return useCaseBundle{}, fmt.Errorf("reviewreply.New: %w", err)
+	}
+	return useCaseBundle{classifier: classifier, generator: generator, critic: critic}, nil
+}
+
 // enqueueFlushFn is the debouncer-facing flush callback. Instead of running
 // the heavy orchestrator inline (which would block the debouncer's timer
 // goroutine for the duration of every LLM call), it hands the turn to the
 // worker pool. When the pool refuses the job (queue saturated) the turn is
 // recorded as a backpressure_drop escalation so operators see the spike and
 // every turn still terminates in exactly one of {auto-send, escalation}.
-func enqueueFlushFn(pool *dispatch.Pool, escalations repository.EscalationStore, log *slog.Logger) debouncer.FlushFn {
+func enqueueFlushFn(pool *dispatch.Pool, escalations repository.EscalationStore, bus *eventbus.Bus, log *slog.Logger) debouncer.FlushFn {
 	return func(ctx context.Context, t domain.Turn) {
 		if pool.Enqueue(ctx, t, "") {
 			return
@@ -284,6 +312,11 @@ func enqueueFlushFn(pool *dispatch.Pool, escalations repository.EscalationStore,
 			log.ErrorContext(ctx, "backpressure_escalation_persist_failed",
 				slog.String("err", err.Error()))
 		}
+		bus.Publish(ctx, eventbus.TopicBackpressureDrop, eventbus.BackpressureDropEvent{
+			ConversationKey: string(t.Key),
+			PostID:          t.LastPostID,
+			At:              time.Now().UTC(),
+		})
 	}
 }
 

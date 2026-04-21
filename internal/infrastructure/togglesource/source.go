@@ -16,6 +16,12 @@ import (
 	"github.com/chaustre/inquiryiq/internal/domain"
 )
 
+// eventPublisher is the consumer-side contract Source uses to emit flip
+// events for downstream subscribers (Slack, PagerDuty). Nil is safe.
+type eventPublisher interface {
+	Publish(ctx context.Context, topic string, payload any)
+}
+
 // Source is a concurrency-safe, in-memory holder for domain.Toggles. A nil
 // logger disables audit logging; a nil counter disables metrics. Both are
 // optional so tests can instantiate without telemetry wiring.
@@ -24,11 +30,20 @@ type Source struct {
 	t       domain.Toggles
 	log     *slog.Logger
 	counter metric.Int64Counter
+	events  eventPublisher
 }
 
-// New constructs a Source seeded with initial. log and counter may be nil.
+// New constructs a Source seeded with initial. log, counter, and events may
+// all be nil.
 func New(initial domain.Toggles, log *slog.Logger, counter metric.Int64Counter) *Source {
 	return &Source{t: initial, log: log, counter: counter}
+}
+
+// WithEvents returns a Source that also publishes flip events on the given
+// bus. Chaining keeps the original New signature backward-compatible.
+func (s *Source) WithEvents(events eventPublisher) *Source {
+	s.events = events
+	return s
 }
 
 // Current returns a snapshot of the current toggles. Safe for concurrent
@@ -70,5 +85,13 @@ func (s *Source) audit(ctx context.Context, field string, prev, now bool, actor 
 				attribute.Bool("enabled", now),
 			),
 		)
+	}
+	if s.events != nil {
+		s.events.Publish(ctx, "toggle.flipped", map[string]any{
+			"field": field,
+			"prev":  prev,
+			"now":   now,
+			"actor": actor,
+		})
 	}
 }

@@ -57,6 +57,13 @@ type togglesProvider interface {
 	Current() domain.Toggles
 }
 
+// eventPublisher is the narrow consumer-side contract the orchestrator uses
+// to emit domain events. Satisfied by *eventbus.Bus; a nil publisher makes
+// every emit a no-op so tests don't need to stand up a bus.
+type eventPublisher interface {
+	Publish(ctx context.Context, topic string, payload any)
+}
+
 // StaticToggles is the test/config-driven adapter that always returns the same
 // domain.Toggles value. Production wiring uses togglesource.Source instead so
 // the admin kill-switch can flip state at runtime.
@@ -80,6 +87,7 @@ type Deps struct {
 	Confidence      confidenceRecorder
 	Critic          replyCritic
 	Toggles         togglesProvider
+	Events          eventPublisher
 	Thresholds      decide.Thresholds
 	Log             *slog.Logger
 }
@@ -186,6 +194,15 @@ func (u *UseCase) markManaged(ctx context.Context, in Input, cls domain.Classifi
 		Platform:        in.Conversation.Integration.Platform,
 		PrimaryCode:     cls.PrimaryCode,
 	})
+	if u.d.Events != nil {
+		u.d.Events.Publish(ctx, "conversion.managed", map[string]any{
+			"reservation_id":   firstReservationID(in.Conversation),
+			"conversation_key": string(in.Turn.Key),
+			"platform":         in.Conversation.Integration.Platform,
+			"primary_code":     string(cls.PrimaryCode),
+			"at":               in.Now,
+		})
+	}
 }
 
 func firstReservationID(c domain.Conversation) string {
@@ -386,6 +403,24 @@ func (u *UseCase) recordEscalation(ctx context.Context, in Input, cls domain.Cla
 	if err := u.d.Escalations.Record(ctx, esc); err != nil {
 		u.logErr(ctx, "escalation_persist_failed", err)
 	}
+	u.publishEscalation(ctx, esc)
+}
+
+func (u *UseCase) publishEscalation(ctx context.Context, e domain.Escalation) {
+	if u.d.Events == nil {
+		return
+	}
+	u.d.Events.Publish(ctx, "escalation.recorded", map[string]any{
+		"id":               e.ID,
+		"trace_id":         e.TraceID,
+		"post_id":          e.PostID,
+		"conversation_key": string(e.ConversationKey),
+		"guest_id":         e.GuestID,
+		"platform":         e.Platform,
+		"reason":           e.Reason,
+		"detail":           e.Detail,
+		"created_at":       e.CreatedAt,
+	})
 }
 
 func (u *UseCase) closeTurn(ctx context.Context, in Input, cls domain.Classification, reply *domain.Reply) {
