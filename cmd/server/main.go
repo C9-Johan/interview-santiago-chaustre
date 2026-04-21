@@ -135,6 +135,7 @@ func buildApp(ctx context.Context, cfg *config.Config, log *slog.Logger, tel *te
 		Memory:          stores.Memory,
 		Classifications: stores.Classifications,
 		Conversions:     tracker,
+		Confidence:      telemetry.NewConfidenceRecorder(tel.Histograms()),
 		Toggles:         domain.Toggles{AutoResponseEnabled: cfg.AutoResponseEnabled},
 		Thresholds:      decide.Thresholds{ClassifierMin: cfg.ClassifierMinConf, GeneratorMin: cfg.GeneratorMinConf},
 		Log:             log,

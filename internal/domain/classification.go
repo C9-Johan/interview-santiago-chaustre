@@ -70,3 +70,38 @@ var LowRiskCodes = map[PrimaryCode]struct{}{
 var AlwaysEscalateCodes = map[PrimaryCode]struct{}{
 	Y2: {}, Y5: {}, R1: {}, R2: {},
 }
+
+// priorityRank ranks Traffic Light codes for multi-signal resolution per
+// CHALLENGE.md §6: RED > Y5 > Y2 > Y4 > Y1 > Y3 > Y6 > Y7 > GREEN > GRAY.
+// Lower rank = higher priority. Consumed by Classification.EnforcePriority.
+var priorityRank = map[PrimaryCode]int{
+	R1: 0, R2: 1,
+	Y5: 2, Y2: 3, Y4: 4, Y1: 5, Y3: 6, Y6: 7, Y7: 8,
+	G1: 9, G2: 10,
+	X1: 11,
+}
+
+// EnforcePriority returns a copy of c with primary and secondary ordered per
+// the §6 priority rule. When SecondaryCode outranks PrimaryCode the two are
+// swapped and swapped=true is returned so the caller can log the correction.
+// Unknown codes rank below X1 and are never promoted above a known code.
+func (c Classification) EnforcePriority() (Classification, bool) {
+	if c.SecondaryCode == nil {
+		return c, false
+	}
+	pr, pok := priorityRank[c.PrimaryCode]
+	if !pok {
+		pr = len(priorityRank)
+	}
+	sr, sok := priorityRank[*c.SecondaryCode]
+	if !sok {
+		sr = len(priorityRank)
+	}
+	if sr >= pr {
+		return c, false
+	}
+	prev := c.PrimaryCode
+	c.PrimaryCode = *c.SecondaryCode
+	c.SecondaryCode = &prev
+	return c, true
+}

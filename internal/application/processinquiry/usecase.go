@@ -31,6 +31,14 @@ type conversionTracker interface {
 	MarkManaged(ctx context.Context, in trackconversion.ManagedInput)
 }
 
+// confidenceRecorder is the narrow interface the orchestrator uses to record
+// the LLM self-rated confidence of each stage so operators can track gate
+// calibration. Satisfied by *telemetry.ConfidenceRecorder.
+type confidenceRecorder interface {
+	RecordClassifier(ctx context.Context, primaryCode string, confidence float64)
+	RecordGenerator(ctx context.Context, primaryCode string, confidence float64)
+}
+
 // Deps bundles every collaborator the orchestrator consumes. Construction is
 // the wiring responsibility of cmd/server; UseCase itself does not know how
 // any collaborator is built.
@@ -43,6 +51,7 @@ type Deps struct {
 	Memory          repository.ConversationMemoryStore
 	Classifications repository.ClassificationStore
 	Conversions     conversionTracker
+	Confidence      confidenceRecorder
 	Toggles         domain.Toggles
 	Thresholds      decide.Thresholds
 	Log             *slog.Logger
@@ -87,6 +96,8 @@ func (u *UseCase) Run(ctx context.Context, in Input) {
 	if !ok {
 		return
 	}
+	cls = u.enforcePriority(ctx, cls)
+	u.recordClassifierConfidence(ctx, cls)
 	span.SetAttributes(
 		attribute.String("classification.primary_code", string(cls.PrimaryCode)),
 		attribute.Float64("classification.confidence", cls.Confidence),
@@ -102,6 +113,7 @@ func (u *UseCase) Run(ctx context.Context, in Input) {
 	if !ok {
 		return
 	}
+	u.recordGeneratorConfidence(ctx, cls, reply)
 	u.gateAndSend(ctx, in, cls, reply)
 }
 
@@ -167,6 +179,40 @@ func (u *UseCase) priorContext(ctx context.Context, in Input) domain.PriorContex
 		Thread:        in.Conversation.Thread,
 		GuestProfile:  profile,
 	}
+}
+
+func (u *UseCase) recordClassifierConfidence(ctx context.Context, cls domain.Classification) {
+	if u.d.Confidence == nil {
+		return
+	}
+	u.d.Confidence.RecordClassifier(ctx, string(cls.PrimaryCode), cls.Confidence)
+}
+
+func (u *UseCase) recordGeneratorConfidence(ctx context.Context, cls domain.Classification, reply domain.Reply) {
+	if u.d.Confidence == nil {
+		return
+	}
+	u.d.Confidence.RecordGenerator(ctx, string(cls.PrimaryCode), reply.Confidence)
+}
+
+// enforcePriority applies the §6 multi-signal priority rule to the classifier
+// output. When the LLM returned a lower-priority primary alongside a
+// higher-priority secondary (e.g. primary=Y1, secondary=R1 for
+// "any discount? also parking?"), the two are swapped so downstream gates see
+// the code that should actually drive the decision. The swap is logged for
+// operator visibility into LLM-vs-spec divergence.
+func (u *UseCase) enforcePriority(ctx context.Context, cls domain.Classification) domain.Classification {
+	corrected, swapped := cls.EnforcePriority()
+	if !swapped {
+		return cls
+	}
+	if u.d.Log != nil {
+		u.d.Log.InfoContext(ctx, "classification_priority_swapped",
+			slog.String("from_primary", string(cls.PrimaryCode)),
+			slog.String("to_primary", string(corrected.PrimaryCode)),
+		)
+	}
+	return corrected
 }
 
 func (u *UseCase) classifyOrEscalate(ctx context.Context, in Input, prior domain.PriorContext) (domain.Classification, bool) {

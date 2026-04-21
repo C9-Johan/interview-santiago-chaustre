@@ -149,7 +149,7 @@ Each thread item has the same shape as the top-level `message` object.
 ## Important Behaviors
 
 1. **Retries & idempotency.** Guesty/Svix will retry on 5xx, network errors, and timeouts. Dedupe on `message.postId` (message-level) or `svix-id` (delivery-level). Both are stable across retries.
-2. **Burst messages.** Guests often send 2–4 short messages in a row (*"Hi"* → *"is it free this weekend?"* → *"for 4 people"*). Each fires a webhook. Production practice: **debounce ~15s** per conversation before classifying, so the LLM sees the full turn.
+2. **Burst messages.** Guests often send 2–4 short messages in a row (*"Hi"* → *"is it free this weekend?"* → *"for 4 people"*). Each fires a webhook. Production practice: **debounce ~15s** per conversation before classifying, so the LLM sees the full turn. Pair that sliding window with a **hard `maxWait` cap** (our default 60s, `DEBOUNCE_MAX_WAIT_MS`) measured from the first message of the turn, so a slow typist never stalls the pipeline indefinitely.
 3. **Host already replied.** By the time your poll cycle runs, the host may have responded manually. Re-check `conversation.thread` for a later non-guest message before auto-sending.
 4. **Missing reservation.** Pre-booking inquiries sometimes arrive before a Guesty reservation exists. Handle `reservationId` absent and `meta.reservations` empty.
 5. **Body can be empty-ish.** Attachments, stickers, or system markers can produce `""` or whitespace-only bodies. Skip classification, don't crash.

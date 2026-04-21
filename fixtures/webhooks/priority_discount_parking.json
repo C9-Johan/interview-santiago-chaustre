@@ -1,0 +1,29 @@
+{
+  "event": "reservation.messageReceived",
+  "reservationId": "res_prio_001",
+  "message": {
+    "postId": "msg_prio_01",
+    "body": "Any discount for 3 nights? Also is parking included?",
+    "createdAt": "2026-04-20T14:31:09Z",
+    "type": "fromGuest",
+    "module": "airbnb2"
+  },
+  "conversation": {
+    "_id": "conv_prio_001",
+    "guestId": "guest_prio_001",
+    "language": "en",
+    "status": "OPEN",
+    "integration": { "platform": "airbnb2" },
+    "meta": {
+      "guestName": "Priya",
+      "reservations": [{
+        "_id": "res_prio_001",
+        "checkIn":  "2026-04-24T22:00:00.000Z",
+        "checkOut": "2026-04-27T16:00:00.000Z",
+        "confirmationCode": "PRIOCODE"
+      }]
+    },
+    "thread": []
+  },
+  "meta": { "eventId": "evt_prio_01", "messageId": "msgid_prio_01" }
+}

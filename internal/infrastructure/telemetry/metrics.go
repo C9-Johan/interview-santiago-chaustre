@@ -23,13 +23,25 @@ type Counters struct {
 	Converted metric.Int64Counter
 }
 
+// Histograms holds the service's LLM confidence distributions. Buckets are
+// chosen around the gate thresholds (0.65 classifier, 0.70 generator) so
+// operators can see calibration drift at a glance.
+type Histograms struct {
+	ClassifierConfidence metric.Float64Histogram
+	GeneratorConfidence  metric.Float64Histogram
+}
+
 // Counters returns the service counters wired during Setup.
 func (p *Provider) Counters() *Counters { return p.counters }
 
+// Histograms returns the service confidence histograms wired during Setup.
+func (p *Provider) Histograms() *Histograms { return p.histograms }
+
 func (p *Provider) attachMetrics(ctx context.Context, cfg Config) error {
 	if cfg.Endpoint == "" {
-		mp := metricnoop.NewMeterProvider()
-		p.counters = mustCounters(mp.Meter(meterName))
+		m := metricnoop.NewMeterProvider().Meter(meterName)
+		p.counters = mustCounters(m)
+		p.histograms = mustHistograms(m)
 		return nil
 	}
 	exp, err := otlpmetrichttp.New(ctx, metricExporterOptions(cfg)...)
@@ -41,7 +53,9 @@ func (p *Provider) attachMetrics(ctx context.Context, cfg Config) error {
 	)
 	otel.SetMeterProvider(mp)
 	p.meterShutdown = mp.Shutdown
-	p.counters = mustCounters(mp.Meter(meterName))
+	m := mp.Meter(meterName)
+	p.counters = mustCounters(m)
+	p.histograms = mustHistograms(m)
 	return nil
 }
 
@@ -64,4 +78,20 @@ func mustCounters(m metric.Meter) *Counters {
 		metric.WithDescription("Bot-managed conversations that ended in a confirmed reservation"),
 	)
 	return &Counters{Managed: managed, Converted: converted}
+}
+
+// confidenceBuckets brackets 0..1 around the auto-send gate thresholds so
+// operators can see the tail below 0.65/0.70 where escalations pile up.
+var confidenceBuckets = []float64{0.0, 0.25, 0.5, 0.6, 0.65, 0.7, 0.75, 0.8, 0.9, 0.95, 1.0}
+
+func mustHistograms(m metric.Meter) *Histograms {
+	cls, _ := m.Float64Histogram("inquiryiq.classifier.confidence",
+		metric.WithDescription("Classifier self-rated confidence per turn"),
+		metric.WithExplicitBucketBoundaries(confidenceBuckets...),
+	)
+	gen, _ := m.Float64Histogram("inquiryiq.generator.confidence",
+		metric.WithDescription("Generator self-rated confidence per reply"),
+		metric.WithExplicitBucketBoundaries(confidenceBuckets...),
+	)
+	return &Histograms{ClassifierConfidence: cls, GeneratorConfidence: gen}
 }

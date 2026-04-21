@@ -19,7 +19,16 @@ type Config struct {
 	GuestyWebhookSecret string
 	SvixMaxClockDrift   time.Duration
 
-	DebounceWindow  time.Duration
+	// DebounceWindow is the quiet period since the last message that must
+	// elapse before the buffered turn is flushed to the classifier. Re-armed
+	// on every Push. Default 15s matches the burst pattern documented in
+	// GUESTY_WEBHOOK_CONTRACT.md §"Burst messages".
+	DebounceWindow time.Duration
+
+	// DebounceMaxWait is the hard ceiling measured from the first message of
+	// the turn. If DebounceWindow keeps re-arming past this budget the buffer
+	// is flushed anyway, so a guest typing slowly never stalls the pipeline
+	// indefinitely. Default 60s.
 	DebounceMaxWait time.Duration
 
 	GuestyBaseURL string
