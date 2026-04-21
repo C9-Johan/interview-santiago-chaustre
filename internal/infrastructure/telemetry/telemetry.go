@@ -45,6 +45,7 @@ type Provider struct {
 	meterShutdown func(context.Context) error
 	counters      *Counters
 	histograms    *Histograms
+	updowns       *UpDowns
 }
 
 // Tracer returns the instrumentation tracer shared by all call sites in the

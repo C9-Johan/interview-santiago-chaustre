@@ -74,6 +74,20 @@ type Config struct {
 	AutoReplayDelay       time.Duration
 	AutoReplayExecute     bool
 
+	// DispatchWorkers is the number of worker goroutines that drain the
+	// orchestrator queue. Sized to the expected LLM concurrency budget —
+	// too low stalls bursts, too high overruns provider rate limits.
+	DispatchWorkers int
+	// DispatchQueueSize caps the number of turns waiting to be picked up by a
+	// worker. When the queue is full new turns drop to a backpressure_drop
+	// escalation, never silently lost. Sized for the maximum burst we want
+	// to absorb without escalating.
+	DispatchQueueSize int
+	// DispatchShutdownTimeout bounds how long Stop will wait for workers to
+	// finish in-flight turns before giving up. Prevents a stuck worker from
+	// hanging the process past systemd's SIGKILL deadline.
+	DispatchShutdownTimeout time.Duration
+
 	// AdminToken is the shared bearer token that guards /admin/* endpoints.
 	// When empty the admin routes are disabled entirely — there is no
 	// "unauthenticated admin" mode by design, because the auto-response
@@ -140,6 +154,10 @@ func Load() (Config, error) {
 		AutoReplayFixturesDir: getenv("AUTO_REPLAY_FIXTURES_DIR", "./fixtures/webhooks"),
 		AutoReplayDelay:       getDurationMs("AUTO_REPLAY_DELAY_MS", 500),
 		AutoReplayExecute:     getBool("AUTO_REPLAY_EXECUTE", false),
+
+		DispatchWorkers:         getInt("DISPATCH_WORKERS", 8),
+		DispatchQueueSize:       getInt("DISPATCH_QUEUE_SIZE", 128),
+		DispatchShutdownTimeout: getDurationMs("DISPATCH_SHUTDOWN_TIMEOUT_MS", 10_000),
 
 		AdminToken: os.Getenv("ADMIN_TOKEN"),
 	}

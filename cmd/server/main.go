@@ -16,8 +16,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/chaustre/inquiryiq/internal/application/classify"
 	"github.com/chaustre/inquiryiq/internal/application/decide"
+	"github.com/chaustre/inquiryiq/internal/application/dispatch"
 	"github.com/chaustre/inquiryiq/internal/application/generatereply"
 	"github.com/chaustre/inquiryiq/internal/application/processinquiry"
 	"github.com/chaustre/inquiryiq/internal/application/reviewreply"
@@ -98,11 +101,17 @@ func run() error {
 type appBundle struct {
 	orch          *processinquiry.UseCase
 	debouncer     *debouncer.Timed
+	pool          *dispatch.Pool
 	handler       *transporthttp.Handler
 	router        nethttp.Handler
 	stores        *store.Bundle
 	fixtureMapper processinquiry.FixtureMapper
 	guesty        repository.GuestyClient
+	shutdownCfg   shutdownConfig
+}
+
+type shutdownConfig struct {
+	dispatchTimeout time.Duration
 }
 
 func buildApp(ctx context.Context, cfg *config.Config, log *slog.Logger, tel *telemetry.Provider, ls *langsmith.Provider) (*appBundle, error) {
@@ -155,7 +164,18 @@ func buildApp(ctx context.Context, cfg *config.Config, log *slog.Logger, tel *te
 		Log:             log,
 	})
 
-	deb := debouncer.NewTimed(cfg.DebounceWindow, cfg.DebounceMaxWait, clk, makeFlushFn(orch, gclient, log))
+	pool := dispatch.New(dispatch.Config{
+		Workers:      cfg.DispatchWorkers,
+		QueueSize:    cfg.DispatchQueueSize,
+		Log:          log,
+		Accepted:     tel.Counters().DispatchAccepted,
+		Dropped:      tel.Counters().DispatchDropped,
+		QueueDepth:   tel.UpDowns().DispatchQueueDepth,
+		QueueLatency: tel.Histograms().DispatchQueueLatency,
+	}, makeFlushFn(orch, gclient, log))
+	pool.Start()
+
+	deb := debouncer.NewTimed(cfg.DebounceWindow, cfg.DebounceMaxWait, clk, enqueueFlushFn(pool, stores.Escalations, log))
 
 	handler := transporthttp.NewHandler(transporthttp.Handler{
 		Webhooks:         stores.Webhooks,
@@ -183,11 +203,13 @@ func buildApp(ctx context.Context, cfg *config.Config, log *slog.Logger, tel *te
 	return &appBundle{
 		orch:          orch,
 		debouncer:     deb,
+		pool:          pool,
 		handler:       handler,
 		router:        telemetry.HTTPMiddleware(cfg.OTELServiceName, transporthttp.NewRouter(handler, reservationHandler, adminHandler)),
 		stores:        stores,
 		fixtureMapper: fixtureMapperFromConfig(),
 		guesty:        gclient,
+		shutdownCfg:   shutdownConfig{dispatchTimeout: cfg.DispatchShutdownTimeout},
 	}, nil
 }
 
@@ -224,6 +246,11 @@ func serve(ctx context.Context, cfg *config.Config, app *appBundle, log *slog.Lo
 func shutdown(srv *nethttp.Server, app *appBundle, log *slog.Logger) error {
 	log.Info("shutdown_begin")
 	app.debouncer.Stop()
+	if app.pool != nil {
+		poolCtx, poolCancel := context.WithTimeout(context.Background(), app.shutdownCfg.dispatchTimeout)
+		app.pool.Stop(poolCtx)
+		poolCancel()
+	}
 	sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(sctx); err != nil {
@@ -233,11 +260,37 @@ func shutdown(srv *nethttp.Server, app *appBundle, log *slog.Logger) error {
 	return nil
 }
 
+// enqueueFlushFn is the debouncer-facing flush callback. Instead of running
+// the heavy orchestrator inline (which would block the debouncer's timer
+// goroutine for the duration of every LLM call), it hands the turn to the
+// worker pool. When the pool refuses the job (queue saturated) the turn is
+// recorded as a backpressure_drop escalation so operators see the spike and
+// every turn still terminates in exactly one of {auto-send, escalation}.
+func enqueueFlushFn(pool *dispatch.Pool, escalations repository.EscalationStore, log *slog.Logger) debouncer.FlushFn {
+	return func(ctx context.Context, t domain.Turn) {
+		if pool.Enqueue(ctx, t, "") {
+			return
+		}
+		if err := escalations.Record(ctx, domain.Escalation{
+			ID:              uuid.NewString(),
+			TraceID:         obs.TraceIDFrom(ctx),
+			PostID:          t.LastPostID,
+			ConversationKey: t.Key,
+			CreatedAt:       time.Now().UTC(),
+			Reason:          "backpressure_drop",
+			Detail:          []string{"orchestrator queue saturated"},
+		}); err != nil {
+			log.ErrorContext(ctx, "backpressure_escalation_persist_failed",
+				slog.String("err", err.Error()))
+		}
+	}
+}
+
 // makeFlushFn is the bridge from debouncer -> orchestrator. It resolves the
 // current conversation snapshot from Guesty (so host-already-replied is
 // re-checked), falls back to defaultListingID when the payload has no
 // reservation, and invokes orch.Run synchronously on the timer goroutine.
-func makeFlushFn(orch *processinquiry.UseCase, g repository.GuestyClient, log *slog.Logger) debouncer.FlushFn {
+func makeFlushFn(orch *processinquiry.UseCase, g repository.GuestyClient, log *slog.Logger) dispatch.Handler {
 	return func(ctx context.Context, t domain.Turn) {
 		convRawID := convIDFromTurn(t)
 		conv, err := g.GetConversation(ctx, convRawID)
