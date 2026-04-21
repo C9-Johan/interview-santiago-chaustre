@@ -13,6 +13,7 @@ import (
 
 	"github.com/chaustre/inquiryiq/internal/application/promptsafety"
 	"github.com/chaustre/inquiryiq/internal/domain"
+	"github.com/chaustre/inquiryiq/internal/infrastructure/llm"
 )
 
 // llmClient is the narrow unexported contract Classify depends on. The
@@ -55,6 +56,7 @@ type Input struct {
 func (u *UseCase) Classify(ctx context.Context, in Input) (domain.Classification, error) {
 	ctx, cancel := context.WithTimeout(ctx, u.timeout)
 	defer cancel()
+	ctx = llm.WithStage(ctx, llm.StageClassifier)
 	messages := []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: systemPrompt},
 		{Role: openai.ChatMessageRoleUser, Content: buildUserMessage(in)},

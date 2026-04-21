@@ -1,0 +1,173 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "panels": [
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 6, "w": 8, "x": 0, "y": 0},
+      "id": 1,
+      "title": "Total tokens (all stages)",
+      "type": "stat",
+      "fieldConfig": {
+        "defaults": {"unit": "short", "color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}}
+      },
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto", "colorMode": "value"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "expr": "sum(inquiryiq_llm_tokens_total{kind=\"total\"})",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 6, "w": 8, "x": 8, "y": 0},
+      "id": 2,
+      "title": "LLM calls / min",
+      "type": "stat",
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "expr": "60 * sum(rate(inquiryiq_llm_calls_total[5m]))",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 6, "w": 8, "x": 16, "y": 0},
+      "id": 3,
+      "title": "Error rate",
+      "type": "stat",
+      "fieldConfig": {
+        "defaults": {"unit": "percentunit", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 0.01}, {"color": "red", "value": 0.05}]}}
+      },
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "colorMode": "value"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "expr": "sum(rate(inquiryiq_llm_calls_total{outcome=\"error\"}[5m])) / clamp_min(sum(rate(inquiryiq_llm_calls_total[5m])), 0.001)",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 6},
+      "id": 4,
+      "title": "Tokens by stage (rate / min)",
+      "type": "timeseries",
+      "fieldConfig": {"defaults": {"unit": "short", "custom": {"drawStyle": "bars"}}},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "expr": "60 * sum by (stage) (rate(inquiryiq_llm_tokens_total{kind=\"total\"}[5m]))",
+          "legendFormat": "{{stage}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 6},
+      "id": 5,
+      "title": "Prompt vs completion tokens (rate / min)",
+      "type": "timeseries",
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "expr": "60 * sum by (kind) (rate(inquiryiq_llm_tokens_total{kind=~\"prompt|completion\"}[5m]))",
+          "legendFormat": "{{kind}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 15},
+      "id": 6,
+      "title": "Calls per stage (rate / min)",
+      "type": "timeseries",
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "expr": "60 * sum by (stage) (rate(inquiryiq_llm_calls_total[5m]))",
+          "legendFormat": "{{stage}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 15},
+      "id": 7,
+      "title": "Mean tokens / call by stage",
+      "type": "timeseries",
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "expr": "sum by (stage) (rate(inquiryiq_llm_tokens_total{kind=\"total\"}[5m])) / clamp_min(sum by (stage) (rate(inquiryiq_llm_calls_total[5m])), 0.001)",
+          "legendFormat": "{{stage}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 24},
+      "id": 8,
+      "title": "Dispatch queue depth",
+      "type": "timeseries",
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "expr": "inquiryiq_dispatch_queue_depth",
+          "legendFormat": "depth",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 24},
+      "id": 9,
+      "title": "Dispatch drops / min",
+      "type": "timeseries",
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "expr": "60 * sum(rate(inquiryiq_dispatch_dropped_total[5m]))",
+          "legendFormat": "dropped",
+          "refId": "A"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "expr": "60 * sum(rate(inquiryiq_dispatch_accepted_total[5m]))",
+          "legendFormat": "accepted",
+          "refId": "B"
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": ["inquiryiq", "llm", "cost"],
+  "templating": {"list": []},
+  "time": {"from": "now-1h", "to": "now"},
+  "timezone": "",
+  "title": "InquiryIQ LLM cost + backpressure",
+  "uid": "inquiryiq-llm-cost",
+  "version": 1,
+  "weekStart": ""
+}

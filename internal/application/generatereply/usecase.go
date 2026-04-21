@@ -55,6 +55,7 @@ type Input struct {
 func (u *UseCase) Generate(ctx context.Context, in Input) (domain.Reply, error) {
 	ctx, cancel := context.WithTimeout(ctx, u.timeout)
 	defer cancel()
+	ctx = llm.WithStage(ctx, llm.StageGenerator)
 	messages := []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: systemPrompt},
 		{Role: openai.ChatMessageRoleUser, Content: buildUserMessage(in)},

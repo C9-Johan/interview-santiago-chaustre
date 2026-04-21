@@ -54,8 +54,9 @@ type Pool struct {
 	queue   chan job
 	wg      sync.WaitGroup
 
-	ctx    context.Context
-	cancel context.CancelFunc
+	metricsCtx context.Context
+	done       chan struct{}
+	closeOnce  sync.Once
 }
 
 type job struct {
@@ -73,13 +74,12 @@ func New(cfg Config, handler Handler) *Pool {
 	if cfg.QueueSize <= 0 {
 		cfg.QueueSize = 64
 	}
-	ctx, cancel := context.WithCancel(context.Background())
 	return &Pool{
-		cfg:     cfg,
-		handler: handler,
-		queue:   make(chan job, cfg.QueueSize),
-		ctx:     ctx,
-		cancel:  cancel,
+		cfg:        cfg,
+		handler:    handler,
+		queue:      make(chan job, cfg.QueueSize),
+		metricsCtx: context.Background(),
+		done:       make(chan struct{}),
 	}
 }
 
@@ -93,12 +93,16 @@ func (p *Pool) Start() {
 }
 
 // Enqueue attempts a non-blocking send on the queue. Returns true when the
-// job was accepted, false when the queue is full — callers must record an
-// escalation in the false case so the turn is not silently dropped. A
-// context past its deadline still enqueues (workers pick up the deadline
-// and will abort); we do NOT enforce an enqueue-side deadline check because
-// the handler may still want to record a partial result.
+// job was accepted, false when the queue is full OR the pool is stopping.
+// Callers must record an escalation in the false case so the turn is not
+// silently dropped.
 func (p *Pool) Enqueue(ctx context.Context, t domain.Turn, platform string) bool {
+	select {
+	case <-p.done:
+		p.tick(p.cfg.Dropped, 1, platform)
+		return false
+	default:
+	}
 	j := job{ctx: ctx, turn: t, enqueuedAt: time.Now()}
 	select {
 	case p.queue <- j:
@@ -118,18 +122,18 @@ func (p *Pool) Enqueue(ctx context.Context, t domain.Turn, platform string) bool
 	}
 }
 
-// Stop asks every worker to finish the currently-running job, then drains
-// the queue. Returns when every worker has exited or ctx is canceled,
-// whichever comes first.
+// Stop signals the pool to drain. New Enqueue calls return false; workers
+// finish any pending queued jobs and exit. Returns when every worker has
+// exited or ctx is canceled, whichever comes first.
 func (p *Pool) Stop(ctx context.Context) {
-	p.cancel()
-	done := make(chan struct{})
+	p.closeOnce.Do(func() { close(p.done) })
+	finished := make(chan struct{})
 	go func() {
 		p.wg.Wait()
-		close(done)
+		close(finished)
 	}()
 	select {
-	case <-done:
+	case <-finished:
 	case <-ctx.Done():
 	}
 }
@@ -138,10 +142,26 @@ func (p *Pool) worker() {
 	defer p.wg.Done()
 	for {
 		select {
-		case <-p.ctx.Done():
+		case <-p.done:
+			p.drainRemaining()
 			return
 		case j := <-p.queue:
 			p.run(j)
+		}
+	}
+}
+
+// drainRemaining runs whatever is already queued when Stop fires. All workers
+// race on the shared queue; the one that observes the empty default branch
+// exits, leaving any concurrent sender (pre-close) to still complete normally
+// because the queue channel is never closed.
+func (p *Pool) drainRemaining() {
+	for {
+		select {
+		case j := <-p.queue:
+			p.run(j)
+		default:
+			return
 		}
 	}
 }
@@ -154,7 +174,7 @@ func (p *Pool) run(j job) {
 
 func (p *Pool) depth(delta int64) {
 	if p.cfg.QueueDepth != nil {
-		p.cfg.QueueDepth.Add(p.ctx, delta)
+		p.cfg.QueueDepth.Add(p.metricsCtx, delta)
 	}
 }
 
@@ -162,12 +182,12 @@ func (p *Pool) tick(c metric.Int64Counter, n int64, platform string) {
 	if c == nil {
 		return
 	}
-	c.Add(p.ctx, n, metric.WithAttributes(attribute.String("platform", platform)))
+	c.Add(p.metricsCtx, n, metric.WithAttributes(attribute.String("platform", platform)))
 }
 
 func (p *Pool) recordLatency(d time.Duration) {
 	if p.cfg.QueueLatency == nil {
 		return
 	}
-	p.cfg.QueueLatency.Record(p.ctx, d.Seconds())
+	p.cfg.QueueLatency.Record(p.metricsCtx, d.Seconds())
 }

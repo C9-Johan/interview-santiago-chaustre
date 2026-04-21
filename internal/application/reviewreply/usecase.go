@@ -18,6 +18,7 @@ import (
 	"github.com/xeipuuv/gojsonschema"
 
 	"github.com/chaustre/inquiryiq/internal/domain"
+	"github.com/chaustre/inquiryiq/internal/infrastructure/llm"
 )
 
 // llmClient is the narrow unexported contract — the same shape classify and
@@ -84,6 +85,7 @@ type Verdict struct {
 func (u *UseCase) Review(ctx context.Context, in Input) Verdict {
 	ctx, cancel := context.WithTimeout(ctx, u.timeout)
 	defer cancel()
+	ctx = llm.WithStage(ctx, llm.StageCritic)
 	messages := []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: systemPrompt},
 		{Role: openai.ChatMessageRoleUser, Content: buildUserMessage(in)},

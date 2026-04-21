@@ -127,6 +127,7 @@ func buildApp(ctx context.Context, cfg *config.Config, log *slog.Logger, tel *te
 	)
 	llmClient := llm.NewClient(cfg.LLMBaseURL, cfg.LLMAPIKey,
 		llm.WithHTTPClient(ls.WrapOpenAIHTTPClient(telemetry.WrapHTTPClient(nil))),
+		llm.WithTokenRecorder(telemetry.NewTokenRecorder(tel.Counters())),
 	)
 
 	classifier, err := classify.New(llmClient, cfg.ModelClassifier, cfg.ClassifierTimeout)

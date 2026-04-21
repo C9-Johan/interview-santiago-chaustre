@@ -24,6 +24,15 @@ type Counters struct {
 	ToggleFlips      metric.Int64Counter
 	DispatchAccepted metric.Int64Counter
 	DispatchDropped  metric.Int64Counter
+
+	// LLMTokens counts prompt/completion/total tokens consumed per stage
+	// (classifier, generator, critic). Labels: model, stage, kind.
+	// Dashboards multiply by a static price table to estimate cost.
+	LLMTokens metric.Int64Counter
+	// LLMCalls counts Chat invocations per stage so (tokens / calls)
+	// surfaces mean tokens per call in Grafana without a separate
+	// histogram.
+	LLMCalls metric.Int64Counter
 }
 
 // Histograms holds the service's LLM confidence distributions and dispatch
@@ -103,9 +112,16 @@ func mustCounters(m metric.Meter) *Counters {
 	dropped, _ := m.Int64Counter("inquiryiq.dispatch.dropped",
 		metric.WithDescription("Turns dropped by the worker pool due to queue saturation"),
 	)
+	tokens, _ := m.Int64Counter("inquiryiq.llm.tokens",
+		metric.WithDescription("LLM tokens consumed, labeled by model/stage/kind (prompt|completion|total)"),
+	)
+	calls, _ := m.Int64Counter("inquiryiq.llm.calls",
+		metric.WithDescription("LLM Chat invocations, labeled by model/stage/outcome"),
+	)
 	return &Counters{
 		Managed: managed, Converted: converted, ToggleFlips: flips,
 		DispatchAccepted: accepted, DispatchDropped: dropped,
+		LLMTokens: tokens, LLMCalls: calls,
 	}
 }
 

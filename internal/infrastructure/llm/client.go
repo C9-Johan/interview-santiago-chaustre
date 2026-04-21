@@ -27,35 +27,60 @@ func tracer() trace.Tracer { return otel.Tracer(tracerName) }
 // contract; a signature drift on either side becomes a build error.
 var _ repository.LLMClient = (*Client)(nil)
 
-// Client is the production LLMClient.
-type Client struct {
-	c *openai.Client
+// tokenRecorder is the narrow consumer-side contract Client uses to report
+// per-stage spend. Satisfied by *telemetry.TokenRecorder; nil is safe.
+type tokenRecorder interface {
+	Record(ctx context.Context, model, stage, outcome string, prompt, completion, total int)
 }
 
-// Option mutates the openai SDK config before the client is built. Use
-// WithHTTPClient to inject a pre-wrapped transport (e.g. otelhttp for OTEL,
-// or the LangSmith traceopenai decorator).
-type Option func(*openai.ClientConfig)
+// Client is the production LLMClient.
+type Client struct {
+	c      *openai.Client
+	tokens tokenRecorder
+}
+
+// buildConfig aggregates every knob NewClient accepts so Option can mutate
+// both SDK-level (HTTP client) and client-level (token recorder) concerns
+// through a single functional type. Unexported — the only public surface is
+// Option + the With* constructors.
+type buildConfig struct {
+	sdk    openai.ClientConfig
+	tokens tokenRecorder
+}
+
+// Option mutates the client's build-time configuration. Use WithHTTPClient to
+// inject a pre-wrapped transport (otelhttp, LangSmith traceopenai) and
+// WithTokenRecorder to surface per-stage token spend.
+type Option func(*buildConfig)
 
 // WithHTTPClient installs hc as the SDK's underlying HTTP client. Passing nil
 // is a no-op.
 func WithHTTPClient(hc *http.Client) Option {
-	return func(cfg *openai.ClientConfig) {
+	return func(cfg *buildConfig) {
 		if hc != nil {
-			cfg.HTTPClient = hc
+			cfg.sdk.HTTPClient = hc
 		}
+	}
+}
+
+// WithTokenRecorder installs a TokenRecorder so every Chat call reports
+// prompt/completion/total tokens to the service's counter. Nil is safe — the
+// client no-ops when the recorder is absent.
+func WithTokenRecorder(r tokenRecorder) Option {
+	return func(cfg *buildConfig) {
+		cfg.tokens = r
 	}
 }
 
 // NewClient constructs a Client against the given BaseURL and API key.
 // BaseURL examples: "https://api.deepseek.com/v1", "https://api.openai.com/v1".
 func NewClient(baseURL, apiKey string, opts ...Option) *Client {
-	cfg := openai.DefaultConfig(apiKey)
-	cfg.BaseURL = baseURL
+	cfg := buildConfig{sdk: openai.DefaultConfig(apiKey)}
+	cfg.sdk.BaseURL = baseURL
 	for _, o := range opts {
 		o(&cfg)
 	}
-	return &Client{c: openai.NewClientWithConfig(cfg)}
+	return &Client{c: openai.NewClientWithConfig(cfg.sdk), tokens: cfg.tokens}
 }
 
 // Chat forwards the request to the underlying SDK and decorates the surrounding
@@ -75,13 +100,21 @@ func (c *Client) Chat(ctx context.Context, req openai.ChatCompletionRequest) (op
 	))
 	defer span.End()
 
+	stage := string(StageFromContext(ctx))
 	resp, err := c.c.CreateChatCompletion(ctx, req)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "chat_completion_failed")
+		if c.tokens != nil {
+			c.tokens.Record(ctx, req.Model, stage, "error", 0, 0, 0)
+		}
 		return resp, err
 	}
 	annotateResponse(span, resp)
+	if c.tokens != nil {
+		c.tokens.Record(ctx, req.Model, stage, "ok",
+			resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.TotalTokens)
+	}
 	return resp, nil
 }
 
