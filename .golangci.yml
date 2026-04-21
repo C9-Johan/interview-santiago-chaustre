@@ -73,6 +73,7 @@ linters:
       - third_party$
       - builtin$
       - examples$
+      - mocks
 formatters:
   enable:
     - gofumpt
@@ -83,6 +84,8 @@ formatters:
       - third_party$
       - builtin$
       - examples$
+      - mocks
   settings:
     goimports:
-      local-prefixes: github.com/chaustre/inquiryiq
+      local-prefixes:
+        - github.com/chaustre/inquiryiq
