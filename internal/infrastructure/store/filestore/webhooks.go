@@ -7,7 +7,6 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -54,9 +53,6 @@ func (w *Webhooks) Append(_ context.Context, rec repository.WebhookRecord) error
 	}
 	return w.writer.Sync()
 }
-
-// ErrNotFound is returned by Get when no record has the given postID.
-var ErrNotFound = errors.New("record not found")
 
 // Get scans the file for the newest record with matching postID.
 func (w *Webhooks) Get(_ context.Context, postID string) (repository.WebhookRecord, error) {
