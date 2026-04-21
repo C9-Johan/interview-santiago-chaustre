@@ -87,4 +87,5 @@ formatters:
       - mocks
   settings:
     goimports:
-      local-prefixes: github.com/chaustre/inquiryiq
+      local-prefixes:
+        - github.com/chaustre/inquiryiq
