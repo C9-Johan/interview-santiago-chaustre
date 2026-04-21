@@ -36,7 +36,6 @@ func TestDecide(t *testing.T) {
 		{"ok", goodCls, goodReply, nil, okToggles, true, "ok"},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			d := decide.Decide(tc.cls, tc.reply, tc.issues, tc.toggles, thresholds)
