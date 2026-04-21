@@ -19,6 +19,7 @@ func startLogSubscribers(ctx context.Context, bus *eventbus.Bus, log *slog.Logge
 		eventbus.TopicConversionDone,
 		eventbus.TopicToggleFlipped,
 		eventbus.TopicBackpressureDrop,
+		eventbus.TopicBudgetExceeded,
 	} {
 		go consume(ctx, bus, topic, log)
 	}

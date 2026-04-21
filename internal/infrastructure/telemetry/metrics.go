@@ -24,6 +24,7 @@ type Counters struct {
 	ToggleFlips      metric.Int64Counter
 	DispatchAccepted metric.Int64Counter
 	DispatchDropped  metric.Int64Counter
+	BudgetFlips      metric.Int64Counter
 
 	// LLMTokens counts prompt/completion/total tokens consumed per stage
 	// (classifier, generator, critic). Labels: model, stage, kind.
@@ -112,6 +113,9 @@ func mustCounters(m metric.Meter) *Counters {
 	dropped, _ := m.Int64Counter("inquiryiq.dispatch.dropped",
 		metric.WithDescription("Turns dropped by the worker pool due to queue saturation"),
 	)
+	budgetFlips, _ := m.Int64Counter("inquiryiq.budget.flips",
+		metric.WithDescription("Auto-response kill-switch flips triggered by the LLM budget watcher"),
+	)
 	tokens, _ := m.Int64Counter("inquiryiq.llm.tokens",
 		metric.WithDescription("LLM tokens consumed, labeled by model/stage/kind (prompt|completion|total)"),
 	)
@@ -121,7 +125,8 @@ func mustCounters(m metric.Meter) *Counters {
 	return &Counters{
 		Managed: managed, Converted: converted, ToggleFlips: flips,
 		DispatchAccepted: accepted, DispatchDropped: dropped,
-		LLMTokens: tokens, LLMCalls: calls,
+		BudgetFlips: budgetFlips,
+		LLMTokens:   tokens, LLMCalls: calls,
 	}
 }
 

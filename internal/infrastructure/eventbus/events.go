@@ -46,6 +46,19 @@ type ToggleFlippedEvent struct {
 	At    time.Time `json:"at"`
 }
 
+// BudgetExceededEvent fires when the daily LLM spend cap is reached and
+// the watcher trips the auto-response kill-switch. Subscribers can alert
+// finance or page an on-call engineer to either raise the cap or let the
+// bot stay in escalate-only mode until UTC midnight rollover.
+type BudgetExceededEvent struct {
+	Day      string    `json:"day"`
+	SpentUSD float64   `json:"spent_usd"`
+	CapUSD   float64   `json:"cap_usd"`
+	Model    string    `json:"model"`
+	Actor    string    `json:"actor"`
+	At       time.Time `json:"at"`
+}
+
 // BackpressureDropEvent fires when the dispatch queue rejects a turn.
 // Subscribers can alert operators when these exceed a ratio threshold.
 type BackpressureDropEvent struct {

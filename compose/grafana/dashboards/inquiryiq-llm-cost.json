@@ -158,6 +158,38 @@
           "refId": "B"
         }
       ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 33},
+      "id": 10,
+      "title": "Estimated USD / hour (prompt+completion)",
+      "type": "timeseries",
+      "fieldConfig": {"defaults": {"unit": "currencyUSD"}},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "expr": "3600 * (sum(rate(inquiryiq_llm_tokens_total{kind=\"prompt\"}[5m])) / 1000 * 0.00014 + sum(rate(inquiryiq_llm_tokens_total{kind=\"completion\"}[5m])) / 1000 * 0.00028)",
+          "legendFormat": "usd/hr",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 33},
+      "id": 11,
+      "title": "Budget kill-switch flips (last 24h)",
+      "type": "timeseries",
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "expr": "increase(inquiryiq_budget_flips_total[24h])",
+          "legendFormat": "{{reason}}/{{model}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "schemaVersion": 39,

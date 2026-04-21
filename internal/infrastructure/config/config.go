@@ -88,6 +88,19 @@ type Config struct {
 	// hanging the process past systemd's SIGKILL deadline.
 	DispatchShutdownTimeout time.Duration
 
+	// LLMBudgetDailyUSD caps the total USD the service is allowed to spend
+	// on LLM calls in a single UTC day. When the tally breaches the cap the
+	// budget watcher flips auto-response off so escalations take over for
+	// the remainder of the day. <= 0 disables the cap (accounting still
+	// runs so dashboards remain populated).
+	LLMBudgetDailyUSD float64
+	// LLMPricePromptPer1K / LLMPriceCompletionPer1K are the default per-1k-token
+	// USD rates applied to every model. Asymmetric pricing between prompt and
+	// completion tokens is the industry norm — keep them separate. Defaults
+	// match the DeepSeek chat pricing we run against in dev.
+	LLMPricePromptPer1K     float64
+	LLMPriceCompletionPer1K float64
+
 	// AdminToken is the shared bearer token that guards /admin/* endpoints.
 	// When empty the admin routes are disabled entirely — there is no
 	// "unauthenticated admin" mode by design, because the auto-response
@@ -158,6 +171,10 @@ func Load() (Config, error) {
 		DispatchWorkers:         getInt("DISPATCH_WORKERS", 8),
 		DispatchQueueSize:       getInt("DISPATCH_QUEUE_SIZE", 128),
 		DispatchShutdownTimeout: getDurationMs("DISPATCH_SHUTDOWN_TIMEOUT_MS", 10_000),
+
+		LLMBudgetDailyUSD:       getFloat("LLM_BUDGET_DAILY_USD", 0),
+		LLMPricePromptPer1K:     getFloat("LLM_PRICE_PROMPT_PER_1K", 0.00014),
+		LLMPriceCompletionPer1K: getFloat("LLM_PRICE_COMPLETION_PER_1K", 0.00028),
 
 		AdminToken: os.Getenv("ADMIN_TOKEN"),
 	}

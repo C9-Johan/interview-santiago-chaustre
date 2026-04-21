@@ -1,8 +1,11 @@
 # Runbook — auto-response kill-switch
 
 Operator procedure for disabling and re-enabling the auto-reply path during an
-incident. Flipping the switch takes effect on the next inbound turn; in-flight
-turns already past GATE 1 continue to completion.
+incident. Flipping the switch takes effect on the next inbound turn. New turns
+short-circuit before classification once the switch is off, so no LLM tokens
+are spent while the incident is live — important when the trigger is cost or
+provider outage. In-flight turns already past the early gate continue to
+completion.
 
 ## When to use
 
@@ -60,10 +63,11 @@ curl -sS -X POST -H "Authorization: Bearer $ADMIN_TOKEN" \
 1. `inquiryiq.admin.toggle_flips` counter in Grafana should tick on every flip,
    labeled `{field="auto_response", enabled=true|false}`.
 2. Service logs emit `toggle_flip` records carrying `prev`, `now`, `actor`.
-3. After flipping off, every subsequent escalation should carry
-   `Reason="auto_disabled"`. A handful of in-flight turns may still reach
-   GATE 2 and be decided there — that's expected; only new turns hit the new
-   state.
+3. After flipping off, every subsequent turn should land as an escalation
+   with `Reason="auto_disabled"` **and zero LLM calls** (confirm via
+   `inquiryiq.llm.calls` on the cost dashboard — the series should flatten).
+   A small number of turns already mid-classification at flip time will
+   finish and may escalate with a different reason.
 4. After flipping on, the next qualifying turn should produce a
    `send-message` call against Guesty (check the conversions dashboard /
    `inquiryiq.conversations.managed` counter).

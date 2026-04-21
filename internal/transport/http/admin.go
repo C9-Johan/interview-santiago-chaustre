@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/chaustre/inquiryiq/internal/domain"
+	"github.com/chaustre/inquiryiq/internal/infrastructure/budget"
 )
 
 // AdminTogglesSource is the consumer-side contract the admin handler needs.
@@ -18,12 +19,21 @@ type AdminTogglesSource interface {
 	SetAutoResponse(ctx context.Context, enabled bool, actor string) (prev, now bool)
 }
 
-// AdminHandler exposes operator-controlled runtime state — currently only the
-// auto-response kill-switch. Guarded by a shared bearer token against the
-// Authorization header; an empty configured Token disables the routes entirely
-// (503) so an unconfigured deployment never accepts anonymous flips.
+// AdminBudgetSource is the consumer-side contract for the /admin/budget
+// endpoint. Satisfied structurally by *budget.Watcher.
+type AdminBudgetSource interface {
+	Status() budget.Status
+}
+
+// AdminHandler exposes operator-controlled runtime state — the auto-response
+// kill-switch plus a read-only view of the LLM budget. Guarded by a shared
+// bearer token against the Authorization header; an empty configured Token
+// disables the routes entirely (503) so an unconfigured deployment never
+// accepts anonymous flips. Budget is optional — when nil, GET /admin/budget
+// returns 503 so the route does not lie.
 type AdminHandler struct {
 	Source AdminTogglesSource
+	Budget AdminBudgetSource
 	Token  string
 	Log    *slog.Logger
 }
@@ -70,6 +80,21 @@ func (h *AdminHandler) SetAutoResponse(w nethttp.ResponseWriter, r *nethttp.Requ
 		"auto_response_enabled": now,
 		"actor":                 actor,
 	})
+}
+
+// GetBudget returns the current day's LLM spend snapshot so operators can
+// see how close the watcher is to tripping the kill-switch without tailing
+// logs or Prometheus. 503 when no Budget source is wired — a deployment
+// that does not track cost should not lie about its cap.
+func (h *AdminHandler) GetBudget(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if !h.authorized(w, r) {
+		return
+	}
+	if h.Budget == nil {
+		writeJSON(w, nethttp.StatusServiceUnavailable, map[string]string{"error": "budget tracking disabled"})
+		return
+	}
+	writeJSON(w, nethttp.StatusOK, h.Budget.Status())
 }
 
 // authorized enforces bearer-token auth. Constant-time comparison avoids

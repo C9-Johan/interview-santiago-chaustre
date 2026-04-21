@@ -27,6 +27,7 @@ import (
 	"github.com/chaustre/inquiryiq/internal/application/trackconversion"
 	"github.com/chaustre/inquiryiq/internal/domain"
 	"github.com/chaustre/inquiryiq/internal/domain/repository"
+	"github.com/chaustre/inquiryiq/internal/infrastructure/budget"
 	"github.com/chaustre/inquiryiq/internal/infrastructure/clock"
 	"github.com/chaustre/inquiryiq/internal/infrastructure/config"
 	"github.com/chaustre/inquiryiq/internal/infrastructure/debouncer"
@@ -109,6 +110,7 @@ type appBundle struct {
 	fixtureMapper processinquiry.FixtureMapper
 	guesty        repository.GuestyClient
 	bus           *eventbus.Bus
+	budget        *budget.Watcher
 	shutdownCfg   shutdownConfig
 }
 
@@ -127,17 +129,6 @@ func buildApp(ctx context.Context, cfg *config.Config, log *slog.Logger, tel *te
 		cfg.GuestyBaseURL, cfg.GuestyToken, cfg.GuestyTimeout, cfg.GuestyRetries,
 		guesty.WithHTTPClient(telemetry.WrapHTTPClient(&nethttp.Client{Timeout: cfg.GuestyTimeout})),
 	)
-	llmClient := llm.NewClient(cfg.LLMBaseURL, cfg.LLMAPIKey,
-		llm.WithHTTPClient(ls.WrapOpenAIHTTPClient(telemetry.WrapHTTPClient(nil))),
-		llm.WithTokenRecorder(telemetry.NewTokenRecorder(tel.Counters())),
-	)
-
-	useCases, err := buildUseCases(llmClient, gclient, cfg)
-	if err != nil {
-		return nil, err
-	}
-
-	tracker := trackconversion.New(stores.Conversions, telemetry.NewConversionRecorder(tel.Counters()), log)
 
 	bus := eventbus.New(log, 1024)
 	startLogSubscribers(ctx, bus, log)
@@ -147,6 +138,19 @@ func buildApp(ctx context.Context, cfg *config.Config, log *slog.Logger, tel *te
 		log,
 		tel.Counters().ToggleFlips,
 	).WithEvents(bus)
+
+	watcher := buildBudgetWatcher(cfg, tel, toggles, bus, log)
+	llmClient := llm.NewClient(cfg.LLMBaseURL, cfg.LLMAPIKey,
+		llm.WithHTTPClient(ls.WrapOpenAIHTTPClient(telemetry.WrapHTTPClient(nil))),
+		llm.WithTokenRecorder(watcher),
+	)
+
+	useCases, err := buildUseCases(llmClient, gclient, cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	tracker := trackconversion.New(stores.Conversions, telemetry.NewConversionRecorder(tel.Counters()), log)
 
 	orch := processinquiry.New(processinquiry.Deps{
 		Classifier:      useCases.classifier,
@@ -197,6 +201,7 @@ func buildApp(ctx context.Context, cfg *config.Config, log *slog.Logger, tel *te
 	}
 	adminHandler := &transporthttp.AdminHandler{
 		Source: toggles,
+		Budget: watcher,
 		Token:  cfg.AdminToken,
 		Log:    log,
 	}
@@ -211,6 +216,7 @@ func buildApp(ctx context.Context, cfg *config.Config, log *slog.Logger, tel *te
 		fixtureMapper: fixtureMapperFromConfig(),
 		guesty:        gclient,
 		bus:           bus,
+		budget:        watcher,
 		shutdownCfg:   shutdownConfig{dispatchTimeout: cfg.DispatchShutdownTimeout},
 	}, nil
 }
@@ -274,6 +280,33 @@ type useCaseBundle struct {
 	classifier *classify.UseCase
 	generator  *generatereply.UseCase
 	critic     *reviewreply.UseCase
+}
+
+// buildBudgetWatcher assembles the cost accountant that rides in front of
+// the raw TokenRecorder. Split out of buildApp so the wiring site stays
+// below the funlen gate; the watcher is entirely dependency composition.
+func buildBudgetWatcher(
+	cfg *config.Config,
+	tel *telemetry.Provider,
+	toggles *togglesource.Source,
+	bus *eventbus.Bus,
+	log *slog.Logger,
+) *budget.Watcher {
+	return budget.New(
+		budget.Config{
+			CapUSD: cfg.LLMBudgetDailyUSD,
+			UnknownModel: budget.ModelPrice{
+				PromptPer1K:     cfg.LLMPricePromptPer1K,
+				CompletionPer1K: cfg.LLMPriceCompletionPer1K,
+			},
+			Actor: "budget_watcher",
+		},
+		telemetry.NewTokenRecorder(tel.Counters()),
+		toggles,
+		bus,
+		log,
+		tel.Counters().BudgetFlips,
+	)
 }
 
 func buildUseCases(llmClient *llm.Client, gclient repository.GuestyClient, cfg *config.Config) (useCaseBundle, error) {

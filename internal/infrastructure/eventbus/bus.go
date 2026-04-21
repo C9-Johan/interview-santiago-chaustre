@@ -30,6 +30,7 @@ const (
 	TopicConversionDone     Topic = "conversion.converted"
 	TopicToggleFlipped      Topic = "toggle.flipped"
 	TopicBackpressureDrop   Topic = "backpressure.dropped"
+	TopicBudgetExceeded     Topic = "budget.exceeded"
 )
 
 // Bus is the publish/subscribe wrapper. Safe for concurrent publishers;

@@ -129,6 +129,9 @@ func (u *UseCase) Run(ctx context.Context, in Input) {
 	if u.detectInjection(ctx, in) {
 		return
 	}
+	if u.shortCircuitKillSwitch(ctx, in) {
+		return
+	}
 	prior := u.priorContext(ctx, in)
 	cls, ok := u.classifyOrEscalate(ctx, in, prior)
 	if !ok {
@@ -277,6 +280,24 @@ func toolObservationsFrom(r domain.Reply) []reviewreply.ToolObservation {
 		})
 	}
 	return out
+}
+
+// shortCircuitKillSwitch exits the pipeline before any LLM call when
+// auto_response_enabled is off. Recording the escalation up-front keeps the
+// "every turn lands in exactly one of {auto-send, escalation}" invariant,
+// and — critically — skipping classification means the kill-switch actually
+// saves tokens. The budget watcher depends on this: once the daily cap flips
+// the toggle, every subsequent turn must stop costing money.
+// Returns true when the turn was handled and Run must return immediately.
+func (u *UseCase) shortCircuitKillSwitch(ctx context.Context, in Input) bool {
+	if u.d.Toggles.Current().AutoResponseEnabled {
+		return false
+	}
+	u.recordEscalation(ctx, in, domain.Classification{}, nil, domain.Decision{
+		Reason: "auto_disabled",
+	})
+	u.closeTurn(ctx, in, domain.Classification{}, nil)
+	return true
 }
 
 // detectInjection short-circuits the pipeline when any message in the turn
