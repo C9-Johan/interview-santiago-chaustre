@@ -25,7 +25,6 @@ func TestRestrictedContentHits(t *testing.T) {
 		{"multiple", "message me on telegram and I'll give you a special rate", []string{"contact_bypass", "discount_offer"}},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := decide.RestrictedContentHits(tc.body)
