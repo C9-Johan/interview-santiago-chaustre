@@ -3,6 +3,7 @@ package eval
 import (
 	"fmt"
 	"io"
+	"sort"
 )
 
 // PrintReport writes a human-readable summary of r to w. Per-case lines are
@@ -18,6 +19,19 @@ func PrintReport(w io.Writer, r Report) {
 	fmt.Fprintf(w, "risk_flag_agreement  %.3f\n", r.RiskFlagAgreement)
 	fmt.Fprintf(w, "mean_confidence      %.3f\n", r.MeanConfidence)
 	fmt.Fprintf(w, "under_0.65           %d\n", r.UnderThreshold065)
+	if len(r.PerLanguage) > 0 {
+		fmt.Fprintf(w, "\n# per-language\n")
+		langs := make([]string, 0, len(r.PerLanguage))
+		for lang := range r.PerLanguage {
+			langs = append(langs, lang)
+		}
+		sort.Strings(langs)
+		for _, lang := range langs {
+			s := r.PerLanguage[lang]
+			fmt.Fprintf(w, "%-4s  total=%-3d passed=%-3d primary_accuracy=%.3f\n",
+				lang, s.Total, s.Passed, s.PrimaryAccuracy)
+		}
+	}
 	if r.Failed == 0 {
 		return
 	}

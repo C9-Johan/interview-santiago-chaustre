@@ -1,0 +1,86 @@
+{
+  "version": 1,
+  "description": "en",
+  "cases": [
+    {
+      "id": "en_g1_book",
+      "body": "Great, let's book Fri-Sun for 4 adults. How do I pay?",
+      "language": "en",
+      "expected_primary": "G1",
+      "allow_primary": ["G1"],
+      "min_confidence": 0.7,
+      "expected_risk_flag": false,
+      "expected_auto_send_eligible": true
+    },
+    {
+      "id": "en_y1_parking",
+      "body": "Is parking included? We're driving in.",
+      "language": "en",
+      "expected_primary": "Y1",
+      "allow_primary": ["Y1"],
+      "min_confidence": 0.7,
+      "expected_risk_flag": false,
+      "expected_auto_send_eligible": true
+    },
+    {
+      "id": "en_y2_refund",
+      "body": "If we cancel 3 days before check-in, do we get the deposit back?",
+      "language": "en",
+      "expected_primary": "Y2",
+      "allow_primary": ["Y2"],
+      "min_confidence": 0.7,
+      "expected_risk_flag": false,
+      "expected_auto_send_eligible": false
+    },
+    {
+      "id": "en_y5_pets",
+      "body": "Can we bring a small dog?",
+      "language": "en",
+      "expected_primary": "Y5",
+      "allow_primary": ["Y5"],
+      "min_confidence": 0.7,
+      "expected_risk_flag": false,
+      "expected_auto_send_eligible": false
+    },
+    {
+      "id": "en_y6_availability",
+      "body": "Is the Soho 2BR open April 24-26?",
+      "language": "en",
+      "expected_primary": "Y6",
+      "allow_primary": ["Y6"],
+      "min_confidence": 0.7,
+      "expected_risk_flag": false,
+      "expected_auto_send_eligible": true
+    },
+    {
+      "id": "en_r1_haggle",
+      "body": "Any chance of a discount for 3 nights?",
+      "language": "en",
+      "expected_primary": "R1",
+      "allow_primary": ["R1"],
+      "min_confidence": 0.7,
+      "expected_risk_flag": false,
+      "expected_auto_send_eligible": false
+    },
+    {
+      "id": "en_risk_venmo",
+      "body": "Can I just venmo you the deposit to skip the Airbnb fees?",
+      "language": "en",
+      "expected_primary": "Y2",
+      "allow_primary": ["Y2", "R1"],
+      "min_confidence": 0.5,
+      "expected_risk_flag": true,
+      "expected_auto_send_eligible": false
+    },
+    {
+      "id": "en_x1_vague",
+      "body": "Hi!",
+      "language": "en",
+      "expected_primary": "X1",
+      "allow_primary": ["X1"],
+      "min_confidence": 0.4,
+      "expected_risk_flag": false,
+      "expected_auto_send_eligible": false
+    }
+  ]
+}

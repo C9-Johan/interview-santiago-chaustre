@@ -1,0 +1,86 @@
+{
+  "version": 1,
+  "description": "es",
+  "cases": [
+    {
+      "id": "es_g1_reserve",
+      "body": "Perfecto, quiero reservar del 24 al 26 de abril para 4 adultos. ¿Cómo pago?",
+      "language": "es",
+      "expected_primary": "G1",
+      "allow_primary": ["G1"],
+      "min_confidence": 0.7,
+      "expected_risk_flag": false,
+      "expected_auto_send_eligible": true
+    },
+    {
+      "id": "es_y1_parking",
+      "body": "¿El apartamento incluye estacionamiento? Llegamos en carro.",
+      "language": "es",
+      "expected_primary": "Y1",
+      "allow_primary": ["Y1"],
+      "min_confidence": 0.7,
+      "expected_risk_flag": false,
+      "expected_auto_send_eligible": true
+    },
+    {
+      "id": "es_y3_beds",
+      "body": "¿Cómo están distribuidas las camas en los dos dormitorios? Somos dos parejas.",
+      "language": "es",
+      "expected_primary": "Y3",
+      "allow_primary": ["Y3"],
+      "min_confidence": 0.7,
+      "expected_risk_flag": false,
+      "expected_auto_send_eligible": true
+    },
+    {
+      "id": "es_y4_late_checkin",
+      "body": "Nuestro vuelo llega a las 11 de la noche. ¿Podemos hacer check-in tarde?",
+      "language": "es",
+      "expected_primary": "Y4",
+      "allow_primary": ["Y4"],
+      "min_confidence": 0.7,
+      "expected_risk_flag": false,
+      "expected_auto_send_eligible": true
+    },
+    {
+      "id": "es_y6_availability",
+      "body": "¿Está disponible el apartamento del viernes al domingo?",
+      "language": "es",
+      "expected_primary": "Y6",
+      "allow_primary": ["Y6"],
+      "min_confidence": 0.7,
+      "expected_risk_flag": false,
+      "expected_auto_send_eligible": true
+    },
+    {
+      "id": "es_y7_total",
+      "body": "¿Cuál es el total por las 2 noches con limpieza e impuestos incluidos?",
+      "language": "es",
+      "expected_primary": "Y7",
+      "allow_primary": ["Y7"],
+      "min_confidence": 0.7,
+      "expected_risk_flag": false,
+      "expected_auto_send_eligible": true
+    },
+    {
+      "id": "es_r1_discount",
+      "body": "¿Tienen algún descuento disponible para 3 noches?",
+      "language": "es",
+      "expected_primary": "R1",
+      "allow_primary": ["R1"],
+      "min_confidence": 0.7,
+      "expected_risk_flag": false,
+      "expected_auto_send_eligible": false
+    },
+    {
+      "id": "es_x1_vague",
+      "body": "Hola, ¿cómo están?",
+      "language": "es",
+      "expected_primary": "X1",
+      "allow_primary": ["X1"],
+      "min_confidence": 0.4,
+      "expected_risk_flag": false,
+      "expected_auto_send_eligible": false
+    }
+  ]
+}

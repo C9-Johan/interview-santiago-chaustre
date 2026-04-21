@@ -156,3 +156,49 @@ func TestLoadGoldenSetParsesRepoFile(t *testing.T) {
 		t.Errorf("repo golden set should carry >=15 cases, got %d", len(g.Cases))
 	}
 }
+
+func TestLoadGoldenSetDirParsesRepoSets(t *testing.T) {
+	p := filepath.Join("..", "..", "..", "eval", "sets")
+	sets, err := LoadGoldenSetDir(p)
+	if err != nil {
+		t.Fatalf("load dir: %v", err)
+	}
+	if len(sets) < 2 {
+		t.Errorf("expected multiple per-language sets, got %d", len(sets))
+	}
+	seen := map[string]bool{}
+	for _, s := range sets {
+		seen[s.Description] = true
+	}
+	for _, want := range []string{"en", "es", "fr"} {
+		if !seen[want] {
+			t.Errorf("locale %q missing from sets/", want)
+		}
+	}
+}
+
+func TestRunManyReportsPerLocaleAccuracy(t *testing.T) {
+	sets := []GoldenSet{
+		{Description: "en", Cases: []Case{{
+			ID: "en_ok", Body: "book it", Language: "en",
+			ExpectedPrimary: domain.G1, AllowPrimary: []domain.PrimaryCode{domain.G1},
+			MinConfidence: 0.5, ExpectedAutoSendEligible: true,
+		}}},
+		{Description: "es", Cases: []Case{{
+			ID: "es_fail", Body: "reservar", Language: "es",
+			ExpectedPrimary: domain.G1, AllowPrimary: []domain.PrimaryCode{domain.G1},
+			MinConfidence: 0.5, ExpectedAutoSendEligible: true,
+		}}},
+	}
+	fake := newFake(map[string]domain.Classification{
+		"book it":  {PrimaryCode: domain.G1, Confidence: 0.9},
+		"reservar": {PrimaryCode: domain.Y6, Confidence: 0.9},
+	})
+	reports := RunMany(context.Background(), fake, sets, time.Now())
+	if reports["en"].PrimaryAccuracy != 1.0 {
+		t.Errorf("en report: %+v", reports["en"])
+	}
+	if reports["es"].PrimaryAccuracy != 0.0 {
+		t.Errorf("es report: %+v", reports["es"])
+	}
+}

@@ -1,0 +1,86 @@
+{
+  "version": 1,
+  "description": "fr",
+  "cases": [
+    {
+      "id": "fr_g1_reserve",
+      "body": "Parfait, je veux réserver du 24 au 26 avril pour 4 adultes. Comment je paie ?",
+      "language": "fr",
+      "expected_primary": "G1",
+      "allow_primary": ["G1"],
+      "min_confidence": 0.7,
+      "expected_risk_flag": false,
+      "expected_auto_send_eligible": true
+    },
+    {
+      "id": "fr_y1_parking",
+      "body": "Le logement inclut-il un parking ? Nous arrivons en voiture.",
+      "language": "fr",
+      "expected_primary": "Y1",
+      "allow_primary": ["Y1"],
+      "min_confidence": 0.7,
+      "expected_risk_flag": false,
+      "expected_auto_send_eligible": true
+    },
+    {
+      "id": "fr_y4_late_checkin",
+      "body": "Notre vol arrive à 23h. Peut-on faire le check-in tard le soir ?",
+      "language": "fr",
+      "expected_primary": "Y4",
+      "allow_primary": ["Y4"],
+      "min_confidence": 0.7,
+      "expected_risk_flag": false,
+      "expected_auto_send_eligible": true
+    },
+    {
+      "id": "fr_y6_availability",
+      "body": "Le studio est-il disponible du vendredi au dimanche ?",
+      "language": "fr",
+      "expected_primary": "Y6",
+      "allow_primary": ["Y6"],
+      "min_confidence": 0.7,
+      "expected_risk_flag": false,
+      "expected_auto_send_eligible": true
+    },
+    {
+      "id": "fr_y7_total",
+      "body": "Quel est le total pour 2 nuits, taxes et ménage inclus ?",
+      "language": "fr",
+      "expected_primary": "Y7",
+      "allow_primary": ["Y7"],
+      "min_confidence": 0.7,
+      "expected_risk_flag": false,
+      "expected_auto_send_eligible": true
+    },
+    {
+      "id": "fr_r1_discount",
+      "body": "Avez-vous une remise pour un séjour de 3 nuits ?",
+      "language": "fr",
+      "expected_primary": "R1",
+      "allow_primary": ["R1"],
+      "min_confidence": 0.7,
+      "expected_risk_flag": false,
+      "expected_auto_send_eligible": false
+    },
+    {
+      "id": "fr_r2_budget",
+      "body": "C'est trop cher pour notre budget. Avez-vous quelque chose de moins cher ?",
+      "language": "fr",
+      "expected_primary": "R2",
+      "allow_primary": ["R1", "R2"],
+      "min_confidence": 0.6,
+      "expected_risk_flag": false,
+      "expected_auto_send_eligible": false
+    },
+    {
+      "id": "fr_x1_vague",
+      "body": "Salut !",
+      "language": "fr",
+      "expected_primary": "X1",
+      "allow_primary": ["X1"],
+      "min_confidence": 0.4,
+      "expected_risk_flag": false,
+      "expected_auto_send_eligible": false
+    }
+  ]
+}

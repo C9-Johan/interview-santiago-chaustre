@@ -1,5 +1,5 @@
 .PHONY: fmt lint vet test test-integration build run mock-up demo check \
-	stack-up stack-down stack-logs stack-status eval
+	stack-up stack-down stack-logs stack-status eval eval-multi
 
 # COMPOSE defaults to `podman compose` (rootless-friendly). Override to your
 # preferred binary: make stack-up COMPOSE="docker compose"
@@ -25,6 +25,10 @@ build:
 # point at a different labeled file. Exits non-zero on any failing case.
 eval: build
 	./tmp/eval -set eval/golden_set.json
+# Multi-language regression: loads every JSON under eval/sets/ and prints a
+# per-locale report. Use for release gates where one locale must not regress.
+eval-multi: build
+	./tmp/eval -dir eval/sets
 run: build
 	./tmp/server
 mock-up:

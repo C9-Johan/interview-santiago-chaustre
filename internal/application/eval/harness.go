@@ -39,6 +39,14 @@ type Check struct {
 	Got  string
 }
 
+// LanguageStat holds the per-language slice of accuracy so multi-language
+// runs can report whether one locale regressed while others stayed green.
+type LanguageStat struct {
+	Total           int
+	Passed          int
+	PrimaryAccuracy float64
+}
+
 // Report aggregates per-case results into the metrics the CLI prints and the
 // eval target gates on. We intentionally keep metrics surface-level
 // (accuracy on primary, risk-flag agreement, under-confidence count) — a
@@ -51,6 +59,7 @@ type Report struct {
 	RiskFlagAgreement float64
 	MeanConfidence    float64
 	UnderThreshold065 int
+	PerLanguage       map[string]LanguageStat
 	Results           []Result
 }
 
@@ -59,10 +68,28 @@ type Report struct {
 // compare between runs.
 func Run(ctx context.Context, c classifier, g GoldenSet, now time.Time) Report {
 	results := make([]Result, 0, len(g.Cases))
+	cases := make([]Case, 0, len(g.Cases))
 	for i := range g.Cases {
 		results = append(results, runCase(ctx, c, g.Cases[i], now))
+		cases = append(cases, g.Cases[i])
 	}
-	return aggregate(results)
+	return aggregate(results, cases)
+}
+
+// RunMany executes every set in sets against c and returns one Report per
+// set keyed by the set's Description (falling back to an auto index when
+// Description is empty). Useful for running an en/es/fr suite and reporting
+// per-language accuracy separately.
+func RunMany(ctx context.Context, c classifier, sets []GoldenSet, now time.Time) map[string]Report {
+	out := make(map[string]Report, len(sets))
+	for i := range sets {
+		name := sets[i].Description
+		if name == "" {
+			name = fmt.Sprintf("set_%02d", i)
+		}
+		out[name] = Run(ctx, c, sets[i], now)
+	}
+	return out
 }
 
 func runCase(ctx context.Context, c classifier, cc Case, now time.Time) Result {
@@ -167,37 +194,71 @@ func allPassed(cs []Check) bool {
 	return true
 }
 
-func aggregate(results []Result) Report {
-	r := Report{Total: len(results), Results: results}
+func aggregate(results []Result, cases []Case) Report {
+	r := Report{Total: len(results), Results: results, PerLanguage: map[string]LanguageStat{}}
 	if len(results) == 0 {
 		return r
 	}
+	perLang := map[string]*LanguageStat{}
 	var sumConf float64
 	var primaryHits, riskAgree int
 	for i := range results {
+		primaryHit, riskHit := countChecks(results[i].Checks)
+		primaryHits += primaryHit
+		riskAgree += riskHit
+		sumConf += results[i].Got.Confidence
+		if results[i].Got.Confidence < 0.65 {
+			r.UnderThreshold065++
+		}
 		if results[i].Pass {
 			r.Passed++
 		}
 		if !results[i].Pass {
 			r.Failed++
 		}
-		sumConf += results[i].Got.Confidence
-		if results[i].Got.Confidence < 0.65 {
-			r.UnderThreshold065++
-		}
-		for j := range results[i].Checks {
-			ck := results[i].Checks[j]
-			if ck.Name == "primary_code" && ck.Pass {
-				primaryHits++
-			}
-			if ck.Name == "risk_flag" && ck.Pass {
-				riskAgree++
-			}
-		}
+		addToLang(perLang, cases[i].Language, results[i].Pass, primaryHit == 1)
 	}
 	n := float64(len(results))
 	r.PrimaryAccuracy = float64(primaryHits) / n
 	r.RiskFlagAgreement = float64(riskAgree) / n
 	r.MeanConfidence = sumConf / n
+	for lang, stat := range perLang {
+		if stat.Total > 0 {
+			stat.PrimaryAccuracy /= float64(stat.Total)
+		}
+		r.PerLanguage[lang] = *stat
+	}
 	return r
+}
+
+// countChecks returns 1 for each of (primary_code pass, risk_flag pass) so
+// aggregate can sum them without nested branching.
+func countChecks(cs []Check) (primary, risk int) {
+	for i := range cs {
+		if cs[i].Name == "primary_code" && cs[i].Pass {
+			primary = 1
+		}
+		if cs[i].Name == "risk_flag" && cs[i].Pass {
+			risk = 1
+		}
+	}
+	return primary, risk
+}
+
+func addToLang(m map[string]*LanguageStat, lang string, pass, primaryHit bool) {
+	if lang == "" {
+		lang = "unknown"
+	}
+	stat, ok := m[lang]
+	if !ok {
+		stat = &LanguageStat{}
+		m[lang] = stat
+	}
+	stat.Total++
+	if pass {
+		stat.Passed++
+	}
+	if primaryHit {
+		stat.PrimaryAccuracy++ // running hits; normalized by caller
+	}
 }

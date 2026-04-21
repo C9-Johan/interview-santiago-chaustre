@@ -23,15 +23,10 @@ import (
 )
 
 func main() {
-	setPath := flag.String("set", "eval/golden_set.json", "path to the golden set JSON")
+	setPath := flag.String("set", "eval/golden_set.json", "path to a single golden set JSON (ignored when -dir is set)")
+	setDir := flag.String("dir", "", "directory of per-language golden sets; enables multi-set mode")
 	failUnder := flag.Float64("min-accuracy", 1.0, "fail if primary_accuracy < this threshold (use <1 to allow triage runs)")
 	flag.Parse()
-
-	set, err := eval.LoadGoldenSet(*setPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "load golden set: %v\n", err)
-		os.Exit(2)
-	}
 
 	baseURL := envOr("LLM_BASE_URL", "https://api.deepseek.com/v1")
 	model := envOr("LLM_MODEL_CLASSIFIER", "deepseek-chat")
@@ -49,14 +44,50 @@ func main() {
 		os.Exit(2)
 	}
 
+	if *setDir != "" {
+		runMultiSet(classifier, *setDir, *failUnder)
+		return
+	}
+
+	set, err := eval.LoadGoldenSet(*setPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "load golden set: %v\n", err)
+		os.Exit(2)
+	}
 	report := eval.Run(context.Background(), classifier, set, time.Now())
 	eval.PrintReport(os.Stdout, report)
-
 	if report.PrimaryAccuracy < *failUnder {
 		fmt.Fprintf(os.Stderr, "\nprimary_accuracy %.3f < threshold %.3f\n", report.PrimaryAccuracy, *failUnder)
 		os.Exit(1)
 	}
 	if report.Failed > 0 {
+		os.Exit(1)
+	}
+}
+
+// runMultiSet loads every golden set under dir and runs each separately so
+// operators can tell which locale regressed. Exits non-zero if ANY set falls
+// below the accuracy threshold or has a failing case — don't average across
+// locales, a 100%-en + 50%-fr average would hide a real problem.
+func runMultiSet(classifier *classify.UseCase, dir string, failUnder float64) {
+	sets, err := eval.LoadGoldenSetDir(dir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "load golden set dir: %v\n", err)
+		os.Exit(2)
+	}
+	reports := eval.RunMany(context.Background(), classifier, sets, time.Now())
+	fail := false
+	for _, s := range sets {
+		name := s.Description
+		r := reports[name]
+		fmt.Fprintf(os.Stdout, "\n=== %s ===\n", name)
+		eval.PrintReport(os.Stdout, r)
+		if r.PrimaryAccuracy < failUnder || r.Failed > 0 {
+			fail = true
+		}
+	}
+	if fail {
+		fmt.Fprintln(os.Stderr, "\none or more locale sets failed the threshold")
 		os.Exit(1)
 	}
 }

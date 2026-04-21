@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
 
 	"github.com/chaustre/inquiryiq/internal/domain"
 )
@@ -52,5 +54,32 @@ func LoadGoldenSet(path string) (GoldenSet, error) {
 	if len(g.Cases) == 0 {
 		return GoldenSet{}, fmt.Errorf("golden set %s has zero cases", path)
 	}
+	if g.Description == "" {
+		g.Description = filepath.Base(path)
+	}
 	return g, nil
+}
+
+// LoadGoldenSetDir loads every *.json file in dir as a separate GoldenSet and
+// returns them sorted by filename so per-language reports render
+// deterministically. Returns an error if dir is empty or any file fails to
+// parse — we never silently skip a locale.
+func LoadGoldenSetDir(dir string) ([]GoldenSet, error) {
+	matches, err := filepath.Glob(filepath.Join(dir, "*.json"))
+	if err != nil {
+		return nil, fmt.Errorf("glob %s: %w", dir, err)
+	}
+	if len(matches) == 0 {
+		return nil, fmt.Errorf("no *.json files under %s", dir)
+	}
+	sort.Strings(matches)
+	out := make([]GoldenSet, 0, len(matches))
+	for _, p := range matches {
+		g, err := LoadGoldenSet(p)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, g)
+	}
+	return out, nil
 }
