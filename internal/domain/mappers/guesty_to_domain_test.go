@@ -1,6 +1,7 @@
 package mappers_test
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
@@ -18,8 +19,8 @@ func TestListingFromGuesty(t *testing.T) {
 		ID: "L1", Title: "Soho 2BR", Bedrooms: 2, Beds: 3, MaxGuests: 4,
 		Amenities: []string{"wifi"}, BasePrice: 200, Neighborhood: "Soho",
 	}
-	if got.ID != want.ID || got.MaxGuests != want.MaxGuests || got.Neighborhood != want.Neighborhood {
-		t.Fatalf("listing mismatch: got %+v, want %+v", got, want)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("listing mismatch:\n got  %+v\n want %+v", got, want)
 	}
 }
 
