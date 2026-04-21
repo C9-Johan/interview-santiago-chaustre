@@ -77,6 +77,7 @@ type appBundle struct {
 	webhookStore  *filestore.Webhooks
 	classStore    *filestore.Classifications
 	escFileStore  *filestore.Escalations
+	memoryCloser  func() error
 	fixtureMapper processinquiry.FixtureMapper
 	guesty        repository.GuestyClient
 }
@@ -130,6 +131,7 @@ func buildApp(cfg config.Config, log *slog.Logger) (*appBundle, error) {
 		webhookStore:  stores.webhooks,
 		classStore:    stores.classifications,
 		escFileStore:  stores.escFile,
+		memoryCloser:  stores.memoryCloser,
 		fixtureMapper: fixtureMapperFromConfig(),
 		guesty:        gclient,
 	}, nil
@@ -141,7 +143,8 @@ type storeBundle struct {
 	escFile         *filestore.Escalations
 	escRing         *memstore.EscalationRing
 	idempotency     *memstore.Idempotency
-	memory          *memstore.ConversationMemory
+	memory          repository.ConversationMemoryStore
+	memoryCloser    func() error
 }
 
 func buildStores(cfg config.Config) (storeBundle, error) {
@@ -157,14 +160,34 @@ func buildStores(cfg config.Config) (storeBundle, error) {
 	if err != nil {
 		return storeBundle{}, fmt.Errorf("escalations store: %w", err)
 	}
+	memory, memoryCloser, err := buildMemoryStore(cfg)
+	if err != nil {
+		return storeBundle{}, err
+	}
 	return storeBundle{
 		webhooks:        webhooks,
 		classifications: classifications,
 		escFile:         escFile,
 		escRing:         memstore.NewEscalationRing(500, escFile),
 		idempotency:     memstore.NewIdempotency(),
-		memory:          memstore.NewConversationMemory(),
+		memory:          memory,
+		memoryCloser:    memoryCloser,
 	}, nil
+}
+
+// buildMemoryStore selects the ConversationMemory backend by cfg.StoreBackend.
+// "file" (default) returns a JSONL-backed store that survives restarts;
+// "memory" returns a process-local store for tests. Returns a closer that is
+// a no-op for the memory backend.
+func buildMemoryStore(cfg config.Config) (repository.ConversationMemoryStore, func() error, error) {
+	if strings.EqualFold(cfg.StoreBackend, "memory") {
+		return memstore.NewConversationMemory(), func() error { return nil }, nil
+	}
+	fs, err := filestore.NewConversationMemory(cfg.DataDir)
+	if err != nil {
+		return nil, nil, fmt.Errorf("conversation memory store: %w", err)
+	}
+	return fs, fs.Close, nil
 }
 
 func (a *appBundle) closeStores(log *slog.Logger) {
@@ -176,6 +199,11 @@ func (a *appBundle) closeStores(log *slog.Logger) {
 	}
 	if err := a.escFileStore.Close(); err != nil {
 		log.Warn("escalations_store_close_failed", slog.String("err", err.Error()))
+	}
+	if a.memoryCloser != nil {
+		if err := a.memoryCloser(); err != nil {
+			log.Warn("memory_store_close_failed", slog.String("err", err.Error()))
+		}
 	}
 }
 
@@ -331,6 +359,7 @@ func logRedactedConfig(log *slog.Logger, cfg config.Config) {
 		slog.Duration("debounce_max_wait", cfg.DebounceMaxWait),
 		slog.Int("agent_max_turns", cfg.AgentMaxTurns),
 		slog.String("data_dir", cfg.DataDir),
+		slog.String("store_backend", cfg.StoreBackend),
 		slog.Bool("auto_replay_on_boot", cfg.AutoReplayOnBoot),
 		slog.String("guesty_webhook_secret", "***"),
 		slog.String("llm_api_key", "***"),

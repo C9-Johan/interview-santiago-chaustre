@@ -40,7 +40,8 @@ type Config struct {
 	ThreadContextWindow int
 	GuestMemoryLimit    int
 
-	DataDir string
+	DataDir      string
+	StoreBackend string
 
 	AutoReplayOnBoot      bool
 	AutoReplayFixturesDir string
@@ -83,7 +84,8 @@ func Load() (Config, error) {
 		ThreadContextWindow: getInt("THREAD_CONTEXT_WINDOW", 10),
 		GuestMemoryLimit:    getInt("GUEST_MEMORY_LIMIT", 5),
 
-		DataDir: getenv("DATA_DIR", "./data"),
+		DataDir:      getenv("DATA_DIR", "./data"),
+		StoreBackend: getenv("STORE_BACKEND", "file"),
 
 		AutoReplayOnBoot:      getBool("AUTO_REPLAY_ON_BOOT", false),
 		AutoReplayFixturesDir: getenv("AUTO_REPLAY_FIXTURES_DIR", "./fixtures/webhooks"),

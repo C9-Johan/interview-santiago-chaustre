@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/chaustre/inquiryiq/internal/application/classify"
 	"github.com/chaustre/inquiryiq/internal/application/decide"
@@ -24,12 +25,13 @@ import (
 // internal/infrastructure/wire once a third call site appears.
 
 type deps struct {
-	orch     *processinquiry.UseCase
-	webhooks *filestore.Webhooks
-	classes  *filestore.Classifications
-	escFile  *filestore.Escalations
-	escRing  *memstore.EscalationRing
-	guesty   repository.GuestyClient
+	orch         *processinquiry.UseCase
+	webhooks     *filestore.Webhooks
+	classes      *filestore.Classifications
+	escFile      *filestore.Escalations
+	escRing      *memstore.EscalationRing
+	memoryCloser func() error
+	guesty       repository.GuestyClient
 }
 
 func (d *deps) close(log *slog.Logger) {
@@ -41,6 +43,11 @@ func (d *deps) close(log *slog.Logger) {
 	}
 	if err := d.escFile.Close(); err != nil {
 		log.Warn("escalations_store_close_failed", slog.String("err", err.Error()))
+	}
+	if d.memoryCloser != nil {
+		if err := d.memoryCloser(); err != nil {
+			log.Warn("memory_store_close_failed", slog.String("err", err.Error()))
+		}
 	}
 }
 
@@ -58,6 +65,10 @@ func buildDeps(cfg config.Config, log *slog.Logger, f flags) (*deps, error) {
 		return nil, fmt.Errorf("escalations store: %w", err)
 	}
 	escRing := memstore.NewEscalationRing(500, escFile)
+	memory, memoryCloser, err := buildMemory(cfg)
+	if err != nil {
+		return nil, err
+	}
 
 	llmClient := maybeTraceLLM(llm.NewClient(cfg.LLMBaseURL, cfg.LLMAPIKey), f.trace, log)
 	guestyClient := maybeNoopPost(guesty.NewClient(cfg.GuestyBaseURL, cfg.GuestyToken, cfg.GuestyTimeout, cfg.GuestyRetries), f.execute, log)
@@ -74,13 +85,32 @@ func buildDeps(cfg config.Config, log *slog.Logger, f flags) (*deps, error) {
 		Guesty:          guestyClient,
 		Idempotency:     memstore.NewIdempotency(),
 		Escalations:     escRing,
-		Memory:          memstore.NewConversationMemory(),
+		Memory:          memory,
 		Classifications: classes,
 		Toggles:         domain.Toggles{AutoResponseEnabled: cfg.AutoResponseEnabled},
 		Thresholds:      decide.Thresholds{ClassifierMin: cfg.ClassifierMinConf, GeneratorMin: cfg.GeneratorMinConf},
 		Log:             log,
 	})
-	return &deps{orch: orch, webhooks: webhooks, classes: classes, escFile: escFile, escRing: escRing, guesty: guestyClient}, nil
+	return &deps{
+		orch:         orch,
+		webhooks:     webhooks,
+		classes:      classes,
+		escFile:      escFile,
+		escRing:      escRing,
+		memoryCloser: memoryCloser,
+		guesty:       guestyClient,
+	}, nil
+}
+
+func buildMemory(cfg config.Config) (repository.ConversationMemoryStore, func() error, error) {
+	if strings.EqualFold(cfg.StoreBackend, "memory") {
+		return memstore.NewConversationMemory(), func() error { return nil }, nil
+	}
+	fs, err := filestore.NewConversationMemory(cfg.DataDir)
+	if err != nil {
+		return nil, nil, fmt.Errorf("conversation memory store: %w", err)
+	}
+	return fs, fs.Close, nil
 }
 
 func rawToInput(raw []byte) (processinquiry.Input, error) {
