@@ -342,7 +342,7 @@ func bootService(
 		SvixMaxDrift:     5 * time.Minute,
 		Log:              log,
 	})
-	router := transporthttp.NewRouter(handler)
+	router := transporthttp.NewRouter(handler, nil)
 	srv := httptest.NewServer(router)
 	t.Cleanup(srv.Close)
 	t.Cleanup(deb.Stop)
