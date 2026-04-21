@@ -6,6 +6,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/chaustre/inquiryiq/internal/application/classify"
 	"github.com/chaustre/inquiryiq/internal/application/decide"
@@ -14,6 +17,12 @@ import (
 	"github.com/chaustre/inquiryiq/internal/domain/repository"
 	"github.com/chaustre/inquiryiq/internal/infrastructure/obs"
 )
+
+// tracerName identifies spans this orchestrator emits so operators can filter
+// them separately from infrastructure spans (HTTP, DB, etc.).
+const tracerName = "github.com/chaustre/inquiryiq/processinquiry"
+
+func tracer() trace.Tracer { return otel.Tracer(tracerName) }
 
 // Deps bundles every collaborator the orchestrator consumes. Construction is
 // the wiring responsibility of cmd/server; UseCase itself does not know how
@@ -57,13 +66,26 @@ func (u *UseCase) Run(ctx context.Context, in Input) {
 		slog.String("post_id", in.Turn.LastPostID),
 		slog.String("conversation_key", string(in.Turn.Key)),
 	)
+	ctx, span := tracer().Start(ctx, "processinquiry.Run", trace.WithAttributes(
+		attribute.String("conversation.key", string(in.Turn.Key)),
+		attribute.String("post.id", in.Turn.LastPostID),
+		attribute.String("conversation.platform", in.Conversation.Integration.Platform),
+		attribute.String("listing.id", in.ListingID),
+	))
+	defer span.End()
+
 	prior := u.priorContext(ctx, in)
 	cls, ok := u.classifyOrEscalate(ctx, in, prior)
 	if !ok {
 		return
 	}
+	span.SetAttributes(
+		attribute.String("classification.primary_code", string(cls.PrimaryCode)),
+		attribute.Float64("classification.confidence", cls.Confidence),
+	)
 	gate1 := decide.PreGenerate(cls, u.d.Toggles, u.d.Thresholds.ClassifierMin)
 	if !gate1.AutoSend {
+		span.SetAttributes(attribute.String("decision.pre_generate", gate1.Reason))
 		u.recordEscalation(ctx, in, cls, nil, gate1)
 		u.closeTurn(ctx, in, cls, nil)
 		return
@@ -76,8 +98,14 @@ func (u *UseCase) Run(ctx context.Context, in Input) {
 }
 
 func (u *UseCase) gateAndSend(ctx context.Context, in Input, cls domain.Classification, reply domain.Reply) {
+	ctx, span := tracer().Start(ctx, "processinquiry.Decide")
+	defer span.End()
 	issues := decide.ValidateReply(reply)
 	final := decide.Decide(cls, reply, issues, u.d.Toggles, u.d.Thresholds)
+	span.SetAttributes(
+		attribute.Bool("decision.auto_send", final.AutoSend),
+		attribute.String("decision.reason", final.Reason),
+	)
 	if !final.AutoSend {
 		u.recordEscalation(ctx, in, cls, &reply, final)
 		u.closeTurn(ctx, in, cls, &reply)
@@ -111,6 +139,8 @@ func (u *UseCase) priorContext(ctx context.Context, in Input) domain.PriorContex
 }
 
 func (u *UseCase) classifyOrEscalate(ctx context.Context, in Input, prior domain.PriorContext) (domain.Classification, bool) {
+	ctx, span := tracer().Start(ctx, "processinquiry.Classify")
+	defer span.End()
 	cls, err := u.d.Classifier.Classify(ctx, classify.Input{
 		Turn: in.Turn, Prior: prior, Now: in.Now,
 	})
@@ -130,6 +160,9 @@ func (u *UseCase) classifyOrEscalate(ctx context.Context, in Input, prior domain
 }
 
 func (u *UseCase) generateOrEscalate(ctx context.Context, in Input, cls domain.Classification, prior domain.PriorContext) (domain.Reply, bool) {
+	ctx, span := tracer().Start(ctx, "processinquiry.Generate",
+		trace.WithAttributes(attribute.String("classification.primary_code", string(cls.PrimaryCode))))
+	defer span.End()
 	reply, err := u.d.Generator.Generate(ctx, generatereply.Input{
 		Turn:           in.Turn,
 		Classification: cls,

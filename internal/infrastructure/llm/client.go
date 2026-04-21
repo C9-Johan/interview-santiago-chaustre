@@ -6,6 +6,7 @@ package llm
 
 import (
 	"context"
+	"net/http"
 
 	openai "github.com/sashabaranov/go-openai"
 
@@ -21,11 +22,29 @@ type Client struct {
 	c *openai.Client
 }
 
+// Option mutates the openai SDK config before the client is built. Use
+// WithHTTPClient to inject a pre-wrapped transport (e.g. otelhttp for OTEL,
+// or the LangSmith traceopenai decorator).
+type Option func(*openai.ClientConfig)
+
+// WithHTTPClient installs hc as the SDK's underlying HTTP client. Passing nil
+// is a no-op.
+func WithHTTPClient(hc *http.Client) Option {
+	return func(cfg *openai.ClientConfig) {
+		if hc != nil {
+			cfg.HTTPClient = hc
+		}
+	}
+}
+
 // NewClient constructs a Client against the given BaseURL and API key.
 // BaseURL examples: "https://api.deepseek.com/v1", "https://api.openai.com/v1".
-func NewClient(baseURL, apiKey string) *Client {
+func NewClient(baseURL, apiKey string, opts ...Option) *Client {
 	cfg := openai.DefaultConfig(apiKey)
 	cfg.BaseURL = baseURL
+	for _, o := range opts {
+		o(&cfg)
+	}
 	return &Client{c: openai.NewClientWithConfig(cfg)}
 }
 

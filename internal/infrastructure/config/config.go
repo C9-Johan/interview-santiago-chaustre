@@ -43,6 +43,11 @@ type Config struct {
 	DataDir      string
 	StoreBackend string
 
+	OTELServiceName    string
+	OTELServiceVersion string
+	OTELEndpoint       string
+	OTELInsecure       bool
+
 	AutoReplayOnBoot      bool
 	AutoReplayFixturesDir string
 	AutoReplayDelay       time.Duration
@@ -86,6 +91,11 @@ func Load() (Config, error) {
 
 		DataDir:      getenv("DATA_DIR", "./data"),
 		StoreBackend: getenv("STORE_BACKEND", "file"),
+
+		OTELServiceName:    getenv("OTEL_SERVICE_NAME", "inquiryiq"),
+		OTELServiceVersion: getenv("OTEL_SERVICE_VERSION", "dev"),
+		OTELEndpoint:       os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
+		OTELInsecure:       getBool("OTEL_EXPORTER_OTLP_INSECURE", true),
 
 		AutoReplayOnBoot:      getBool("AUTO_REPLAY_ON_BOOT", false),
 		AutoReplayFixturesDir: getenv("AUTO_REPLAY_FIXTURES_DIR", "./fixtures/webhooks"),

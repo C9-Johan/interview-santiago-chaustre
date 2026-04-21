@@ -30,6 +30,7 @@ import (
 	"github.com/chaustre/inquiryiq/internal/infrastructure/obs"
 	"github.com/chaustre/inquiryiq/internal/infrastructure/store/filestore"
 	"github.com/chaustre/inquiryiq/internal/infrastructure/store/memstore"
+	"github.com/chaustre/inquiryiq/internal/infrastructure/telemetry"
 	transporthttp "github.com/chaustre/inquiryiq/internal/transport/http"
 )
 
@@ -53,14 +54,25 @@ func run() error {
 	log := obs.NewLogger(os.Stdout, parseLevel(cfg.LogLevel))
 	logRedactedConfig(log, cfg)
 
-	app, err := buildApp(cfg, log)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	tel, err := telemetry.Setup(ctx, telemetry.Config{
+		ServiceName:    cfg.OTELServiceName,
+		ServiceVersion: cfg.OTELServiceVersion,
+		Endpoint:       cfg.OTELEndpoint,
+		Insecure:       cfg.OTELInsecure,
+	})
+	if err != nil {
+		return fmt.Errorf("telemetry: %w", err)
+	}
+	defer shutdownTelemetry(tel, log)
+
+	app, err := buildApp(cfg, log, tel)
 	if err != nil {
 		return err
 	}
 	defer app.closeStores(log)
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	if cfg.AutoReplayOnBoot {
 		go startAutoReplay(ctx, cfg, app, log)
@@ -82,14 +94,20 @@ type appBundle struct {
 	guesty        repository.GuestyClient
 }
 
-func buildApp(cfg config.Config, log *slog.Logger) (*appBundle, error) {
+func buildApp(cfg config.Config, log *slog.Logger, tel *telemetry.Provider) (*appBundle, error) {
 	stores, err := buildStores(cfg)
 	if err != nil {
 		return nil, err
 	}
 	clk := clock.NewReal()
-	gclient := guesty.NewClient(cfg.GuestyBaseURL, cfg.GuestyToken, cfg.GuestyTimeout, cfg.GuestyRetries)
-	llmClient := llm.NewClient(cfg.LLMBaseURL, cfg.LLMAPIKey)
+	_ = tel // otelhttp picks up the global tracer provider set by telemetry.Setup.
+	gclient := guesty.NewClient(
+		cfg.GuestyBaseURL, cfg.GuestyToken, cfg.GuestyTimeout, cfg.GuestyRetries,
+		guesty.WithHTTPClient(telemetry.WrapHTTPClient(&nethttp.Client{Timeout: cfg.GuestyTimeout})),
+	)
+	llmClient := llm.NewClient(cfg.LLMBaseURL, cfg.LLMAPIKey,
+		llm.WithHTTPClient(telemetry.WrapHTTPClient(nil)),
+	)
 
 	classifier, err := classify.New(llmClient, cfg.ModelClassifier, cfg.ClassifierTimeout)
 	if err != nil {
@@ -127,7 +145,7 @@ func buildApp(cfg config.Config, log *slog.Logger) (*appBundle, error) {
 		orch:          orch,
 		debouncer:     deb,
 		handler:       handler,
-		router:        transporthttp.NewRouter(handler),
+		router:        telemetry.HTTPMiddleware(cfg.OTELServiceName, transporthttp.NewRouter(handler)),
 		webhookStore:  stores.webhooks,
 		classStore:    stores.classifications,
 		escFileStore:  stores.escFile,
@@ -333,6 +351,14 @@ func startAutoReplay(ctx context.Context, cfg config.Config, app *appBundle, log
 	}
 }
 
+func shutdownTelemetry(tel *telemetry.Provider, log *slog.Logger) {
+	sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := tel.Shutdown(sctx); err != nil {
+		log.Warn("telemetry_shutdown_failed", slog.String("err", err.Error()))
+	}
+}
+
 func parseLevel(s string) slog.Level {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "debug":
@@ -360,6 +386,8 @@ func logRedactedConfig(log *slog.Logger, cfg config.Config) {
 		slog.Int("agent_max_turns", cfg.AgentMaxTurns),
 		slog.String("data_dir", cfg.DataDir),
 		slog.String("store_backend", cfg.StoreBackend),
+		slog.String("otel_endpoint", cfg.OTELEndpoint),
+		slog.String("otel_service_name", cfg.OTELServiceName),
 		slog.Bool("auto_replay_on_boot", cfg.AutoReplayOnBoot),
 		slog.String("guesty_webhook_secret", "***"),
 		slog.String("llm_api_key", "***"),

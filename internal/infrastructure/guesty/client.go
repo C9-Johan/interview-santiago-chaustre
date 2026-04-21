@@ -33,17 +33,36 @@ type Client struct {
 	baseBackoff time.Duration
 }
 
+// Option mutates a Client after the defaults are applied. Use WithHTTPClient
+// to inject a pre-wrapped transport (e.g. otelhttp) so outgoing calls are
+// traced.
+type Option func(*Client)
+
+// WithHTTPClient replaces the default HTTP client. Passing nil is a no-op —
+// the default http.Client is retained.
+func WithHTTPClient(hc *http.Client) Option {
+	return func(c *Client) {
+		if hc != nil {
+			c.httpClient = hc
+		}
+	}
+}
+
 // NewClient constructs a Client against baseURL using token for bearer auth.
 // timeout applies per-request; retries shapes how many extra attempts are made
 // on 429 / 5xx / transport errors (0 = no retries, only the initial attempt).
-func NewClient(baseURL, token string, timeout time.Duration, retries int) *Client {
-	return &Client{
+func NewClient(baseURL, token string, timeout time.Duration, retries int, opts ...Option) *Client {
+	c := &Client{
 		baseURL:     baseURL,
 		token:       token,
 		httpClient:  &http.Client{Timeout: timeout},
 		retries:     retries,
 		baseBackoff: 200 * time.Millisecond,
 	}
+	for _, o := range opts {
+		o(c)
+	}
+	return c
 }
 
 // GetListing GETs /listings/{id} and maps the response into a domain.Listing.

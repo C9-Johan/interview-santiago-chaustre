@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	nethttp "net/http"
 	"strings"
 
 	"github.com/chaustre/inquiryiq/internal/application/classify"
@@ -18,6 +19,7 @@ import (
 	"github.com/chaustre/inquiryiq/internal/infrastructure/llm"
 	"github.com/chaustre/inquiryiq/internal/infrastructure/store/filestore"
 	"github.com/chaustre/inquiryiq/internal/infrastructure/store/memstore"
+	"github.com/chaustre/inquiryiq/internal/infrastructure/telemetry"
 	transporthttp "github.com/chaustre/inquiryiq/internal/transport/http"
 )
 
@@ -70,8 +72,17 @@ func buildDeps(cfg config.Config, log *slog.Logger, f flags) (*deps, error) {
 		return nil, err
 	}
 
-	llmClient := maybeTraceLLM(llm.NewClient(cfg.LLMBaseURL, cfg.LLMAPIKey), f.trace, log)
-	guestyClient := maybeNoopPost(guesty.NewClient(cfg.GuestyBaseURL, cfg.GuestyToken, cfg.GuestyTimeout, cfg.GuestyRetries), f.execute, log)
+	llmClient := maybeTraceLLM(
+		llm.NewClient(cfg.LLMBaseURL, cfg.LLMAPIKey, llm.WithHTTPClient(telemetry.WrapHTTPClient(nil))),
+		f.trace, log,
+	)
+	guestyClient := maybeNoopPost(
+		guesty.NewClient(
+			cfg.GuestyBaseURL, cfg.GuestyToken, cfg.GuestyTimeout, cfg.GuestyRetries,
+			guesty.WithHTTPClient(telemetry.WrapHTTPClient(&nethttp.Client{Timeout: cfg.GuestyTimeout})),
+		),
+		f.execute, log,
+	)
 
 	classifier, err := classify.New(llmClient, cfg.ModelClassifier, cfg.ClassifierTimeout)
 	if err != nil {
