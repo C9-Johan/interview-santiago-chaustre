@@ -443,8 +443,9 @@ func waitForSendMessage(t *testing.T, logPath string, timeout time.Duration) str
 	return ""
 }
 
-// countSendMessage reports how many POST …/send-message calls have been
-// observed so far.
+// countSendMessage reports how many POST …/send-message transactions have
+// been observed so far. Parsed structurally — strings.Contains on raw lines
+// would also match bodies that quote the path.
 func countSendMessage(t *testing.T, logPath string) int {
 	t.Helper()
 	f, err := os.Open(logPath)
@@ -456,8 +457,7 @@ func countSendMessage(t *testing.T, logPath string) int {
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	count := 0
 	for sc.Scan() {
-		line := sc.Text()
-		if strings.Contains(line, "POST") && strings.Contains(line, "/send-message") {
+		if isSendMessageTransaction(sc.Text()) {
 			count++
 		}
 	}
@@ -474,7 +474,7 @@ func scanForSendMessage(logPath string) string {
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for sc.Scan() {
 		line := sc.Text()
-		if !strings.Contains(line, "/send-message") {
+		if !isSendMessageTransaction(line) {
 			continue
 		}
 		if body := extractRequestBody(line); body != "" {
@@ -484,29 +484,42 @@ func scanForSendMessage(logPath string) string {
 	return ""
 }
 
-// extractRequestBody pulls the JSON body out of a Mockoon transaction log
-// line. Mockoon emits each transaction as a single JSON object per line with
-// a request.body string. Tolerant of format changes: scans for the first
-// `"body":"…"` after `"request"`.
+func isSendMessageTransaction(line string) bool {
+	var rec mockoonLogLine
+	if err := json.Unmarshal([]byte(line), &rec); err != nil {
+		return false
+	}
+	return rec.Transaction.Request.Method == "POST" &&
+		strings.HasSuffix(rec.RequestPath, "/send-message")
+}
+
+// mockoonLogLine is the subset of Mockoon's transaction log record we care
+// about. The real record is much larger; unmarshaling into a narrow struct
+// is safer than regexp-scanning a line that embeds an already-escaped JSON
+// body (escaped quotes would fool a naive string scanner).
+type mockoonLogLine struct {
+	Message     string `json:"message"`
+	RequestPath string `json:"requestPath"`
+	Transaction struct {
+		Request struct {
+			Body   string `json:"body"`
+			Method string `json:"method"`
+		} `json:"request"`
+	} `json:"transaction"`
+}
+
+// extractRequestBody decodes a Mockoon transaction log line and returns the
+// inbound request body, or "" when the line is not a transaction record or
+// the request body is empty.
 func extractRequestBody(line string) string {
-	i := strings.Index(line, `"request"`)
-	if i < 0 {
+	var rec mockoonLogLine
+	if err := json.Unmarshal([]byte(line), &rec); err != nil {
 		return ""
 	}
-	j := strings.Index(line[i:], `"body":"`)
-	if j < 0 {
+	if rec.Transaction.Request.Method == "" {
 		return ""
 	}
-	start := i + j + len(`"body":"`)
-	end := strings.Index(line[start:], `"`)
-	if end < 0 {
-		return ""
-	}
-	unescaped, err := strconv.Unquote(`"` + line[start:start+end] + `"`)
-	if err != nil {
-		return line[start : start+end]
-	}
-	return unescaped
+	return rec.Transaction.Request.Body
 }
 
 func dumpLog(t *testing.T, logPath string) {
