@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/chaustre/inquiryiq/internal/domain"
@@ -21,7 +22,9 @@ import (
 var _ repository.GuestyClient = (*Client)(nil)
 
 // Client is the production GuestyClient — a thin HTTP wrapper that maps all
-// responses into domain types before handing them back to the caller.
+// responses into domain types before handing them back to the caller. Paths
+// mirror Guesty's real Open API; the Mockoon env in fixtures/mockoon/ follows
+// the same shapes so local dev and production use identical routes.
 type Client struct {
 	baseURL     string
 	token       string
@@ -44,6 +47,8 @@ func NewClient(baseURL, token string, timeout time.Duration, retries int) *Clien
 }
 
 // GetListing GETs /listings/{id} and maps the response into a domain.Listing.
+// Guesty returns `houseRules` as a single string; we split on newlines so the
+// domain type keeps its []string shape.
 func (c *Client) GetListing(ctx context.Context, id string) (domain.Listing, error) {
 	var wire wireListing
 	if err := c.do(ctx, http.MethodGet, "/listings/"+url.PathEscape(id), nil, &wire); err != nil {
@@ -51,95 +56,151 @@ func (c *Client) GetListing(ctx context.Context, id string) (domain.Listing, err
 	}
 	return mappers.ListingFromGuesty(mappers.GuestyListingDTO{
 		ID:           wire.ID,
-		Title:        wire.Title,
+		Title:        listingTitle(wire),
 		Bedrooms:     wire.Bedrooms,
 		Beds:         wire.Beds,
-		MaxGuests:    wire.MaxGuests,
+		MaxGuests:    wire.Accommodates,
 		Amenities:    wire.Amenities,
-		HouseRules:   wire.HouseRules,
-		BasePrice:    wire.BasePrice,
-		Neighborhood: wire.Neighborhood,
+		HouseRules:   splitRules(wire.HouseRules),
+		BasePrice:    wire.Prices.BasePrice,
+		Neighborhood: wire.Address.Neighborhood,
 	}), nil
 }
 
-// CheckAvailability GETs /availability?listingId=&from=&to= and maps the
-// response. Dates are serialized as YYYY-MM-DD (Guesty accepts either full
-// RFC3339 or date-only; date-only keeps the URL short and unambiguous).
+// CheckAvailability GETs the calendar endpoint for the listing over
+// [from, to) and aggregates the per-day response into a domain.Availability.
+// Guesty's `endDate` is inclusive, so we subtract one day from `to`
+// (check-out), since the guest does not pay for the check-out night.
 func (c *Client) CheckAvailability(
 	ctx context.Context, listingID string, from, to time.Time,
 ) (domain.Availability, error) {
+	endInclusive := to.Add(-24 * time.Hour)
 	q := url.Values{}
-	q.Set("listingId", listingID)
-	q.Set("from", from.Format("2006-01-02"))
-	q.Set("to", to.Format("2006-01-02"))
-	var wire wireAvailability
-	if err := c.do(ctx, http.MethodGet, "/availability?"+q.Encode(), nil, &wire); err != nil {
+	q.Set("startDate", from.Format("2006-01-02"))
+	q.Set("endDate", endInclusive.Format("2006-01-02"))
+	path := "/availability-pricing/api/calendar/listings/" + url.PathEscape(listingID) + "?" + q.Encode()
+	var wire wireCalendar
+	if err := c.do(ctx, http.MethodGet, path, nil, &wire); err != nil {
 		return domain.Availability{}, err
 	}
-	return mappers.AvailabilityFromGuesty(mappers.GuestyAvailabilityDTO{
-		Available: wire.Available,
-		Nights:    wire.Nights,
-		TotalUSD:  wire.Total,
-	}), nil
+	return mappers.AvailabilityFromGuesty(aggregateCalendar(wire)), nil
 }
 
-// GetConversationHistory GETs /conversations/{id}/messages?limit=&before=.
-// When beforePostID is empty the parameter is omitted.
+// GetConversationHistory GETs the posts list for a conversation and returns
+// up to `limit` messages. Guesty paginates with skip/limit rather than a
+// cursor, so beforePostID is not wired through — the service re-fetches with
+// a larger limit if the generator needs older context.
 func (c *Client) GetConversationHistory(
-	ctx context.Context, convID string, limit int, beforePostID string,
+	ctx context.Context, convID string, limit int, _ string,
 ) ([]domain.Message, error) {
 	q := url.Values{}
 	q.Set("limit", strconv.Itoa(limit))
-	if beforePostID != "" {
-		q.Set("before", beforePostID)
-	}
-	path := "/conversations/" + url.PathEscape(convID) + "/messages?" + q.Encode()
-	var wire []wireMessage
+	q.Set("skip", "0")
+	path := "/communication/conversations/" + url.PathEscape(convID) + "/posts?" + q.Encode()
+	var wire wirePostsResponse
 	if err := c.do(ctx, http.MethodGet, path, nil, &wire); err != nil {
 		return nil, err
 	}
-	return mapMessages(wire), nil
+	return mapPosts(wire.Results), nil
 }
 
-// GetConversation returns the current Conversation snapshot.
+// GetConversation returns the current Conversation snapshot. The real API
+// splits the conversation object from its posts across two endpoints; we
+// fetch both and assemble the combined domain type so callers stay oblivious.
 func (c *Client) GetConversation(ctx context.Context, convID string) (domain.Conversation, error) {
-	var wire wireConversationResponse
-	if err := c.do(ctx, http.MethodGet, "/conversations/"+url.PathEscape(convID), nil, &wire); err != nil {
+	var wire wireConversation
+	path := "/communication/conversations/" + url.PathEscape(convID)
+	if err := c.do(ctx, http.MethodGet, path, nil, &wire); err != nil {
 		return domain.Conversation{}, err
 	}
-	return conversationFromWire(wire), nil
+	thread, err := c.GetConversationHistory(ctx, convID, defaultThreadPageSize, "")
+	if err != nil {
+		return domain.Conversation{}, err
+	}
+	return conversationFromWire(wire, thread), nil
 }
 
-// PostNote POSTs /conversations/{id}/messages with type="note". Internal
-// notes never reach the guest — this is the only send mode used by the
-// service.
+// PostNote POSTs /communication/conversations/{id}/send-message with
+// type="note". Internal notes never reach the guest — this is the only send
+// mode used by the service.
 func (c *Client) PostNote(ctx context.Context, conversationID, body string) error {
 	payload := mappers.NoteFromDomain(body)
-	path := "/conversations/" + url.PathEscape(conversationID) + "/messages"
+	path := "/communication/conversations/" + url.PathEscape(conversationID) + "/send-message"
 	return c.do(ctx, http.MethodPost, path, payload, nil)
 }
 
-func mapMessages(wire []wireMessage) []domain.Message {
-	out := make([]domain.Message, 0, len(wire))
-	for i := range wire {
+// defaultThreadPageSize matches the ThreadContextWindow default in config.
+// When the generator needs more, it invokes the get_conversation_history tool
+// with a larger limit rather than refetching GetConversation.
+const defaultThreadPageSize = 25
+
+func listingTitle(w wireListing) string {
+	if w.Title != "" {
+		return w.Title
+	}
+	return w.Nickname
+}
+
+func splitRules(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, "\n")
+	out := make([]string, 0, len(parts))
+	for i := range parts {
+		p := strings.TrimSpace(parts[i])
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// aggregateCalendar folds the per-day calendar payload into the flat domain
+// projection. Available = every day's status is "available"; total sums the
+// per-night price; nights = len(days).
+func aggregateCalendar(w wireCalendar) mappers.GuestyAvailabilityDTO {
+	days := w.Data.Days
+	if len(days) == 0 {
+		return mappers.GuestyAvailabilityDTO{}
+	}
+	available := true
+	var total float64
+	for i := range days {
+		if days[i].Status != "available" {
+			available = false
+		}
+		total += days[i].Price
+	}
+	return mappers.GuestyAvailabilityDTO{
+		Available: available,
+		Nights:    len(days),
+		TotalUSD:  total,
+	}
+}
+
+func mapPosts(posts []wirePost) []domain.Message {
+	out := make([]domain.Message, 0, len(posts))
+	for i := range posts {
 		out = append(out, mappers.MessageFromGuesty(mappers.GuestyMessageDTO{
-			PostID:    wire[i].PostID,
-			Body:      wire[i].Body,
-			CreatedAt: wire[i].CreatedAt,
-			Type:      wire[i].Type,
-			Module:    wire[i].Module,
+			PostID:    posts[i].effectivePostID(),
+			Body:      posts[i].Body,
+			CreatedAt: posts[i].CreatedAt,
+			Type:      posts[i].Type,
+			Module:    posts[i].Module,
 		}))
 	}
 	return out
 }
 
-func conversationFromWire(wire wireConversationResponse) domain.Conversation {
+func conversationFromWire(wire wireConversation, thread []domain.Message) domain.Conversation {
 	conv := domain.Conversation{
 		RawID:       wire.ID,
 		GuestID:     wire.GuestID,
 		Language:    wire.Language,
 		GuestName:   wire.Meta.GuestName,
 		Integration: domain.Integration{Platform: wire.Integration.Platform},
+		Thread:      thread,
 	}
 	if len(wire.Meta.Reservations) > 0 {
 		conv.Reservations = make([]domain.Reservation, 0, len(wire.Meta.Reservations))
@@ -152,7 +213,6 @@ func conversationFromWire(wire wireConversationResponse) domain.Conversation {
 			})
 		}
 	}
-	conv.Thread = mapMessages(wire.Thread)
 	return conv
 }
 

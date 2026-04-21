@@ -1,0 +1,29 @@
+{
+  "event": "reservation.messageReceived",
+  "reservationId": "res_burst_001",
+  "message": {
+    "postId": "msg_burst_03",
+    "body": "for 4 adults, what's the total?",
+    "createdAt": "2026-04-20T14:31:15Z",
+    "type": "fromGuest",
+    "module": "airbnb2"
+  },
+  "conversation": {
+    "_id": "conv_burst_001",
+    "guestId": "guest_burst_001",
+    "language": "en",
+    "status": "OPEN",
+    "integration": { "platform": "airbnb2" },
+    "meta": {
+      "guestName": "Sarah",
+      "reservations": [{
+        "_id": "res_burst_001",
+        "checkIn":  "2026-04-24T22:00:00.000Z",
+        "checkOut": "2026-04-26T16:00:00.000Z",
+        "confirmationCode": "BURSTCODE"
+      }]
+    },
+    "thread": []
+  },
+  "meta": { "eventId": "evt_burst_03", "messageId": "msgid_burst_03" }
+}

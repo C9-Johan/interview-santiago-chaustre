@@ -1,0 +1,29 @@
+{
+  "event": "reservation.messageReceived",
+  "reservationId": "res_venmo_001",
+  "message": {
+    "postId": "msg_venmo_01",
+    "body": "Hey, can I pay you directly via Venmo instead of going through the platform?",
+    "createdAt": "2026-04-20T14:31:09Z",
+    "type": "fromGuest",
+    "module": "airbnb2"
+  },
+  "conversation": {
+    "_id": "conv_venmo_001",
+    "guestId": "guest_venmo_001",
+    "language": "en",
+    "status": "OPEN",
+    "integration": { "platform": "airbnb2" },
+    "meta": {
+      "guestName": "Jordan",
+      "reservations": [{
+        "_id": "res_venmo_001",
+        "checkIn":  "2026-04-24T22:00:00.000Z",
+        "checkOut": "2026-04-26T16:00:00.000Z",
+        "confirmationCode": "VENMOCDE"
+      }]
+    },
+    "thread": []
+  },
+  "meta": { "eventId": "evt_venmo_01", "messageId": "msgid_venmo_01" }
+}

@@ -74,6 +74,13 @@ linters:
           - revive
           - staticcheck
         path: mocks/
+      # Integration tests spawn Mockoon as a subprocess and tail its log file.
+      # G204 (subprocess) and G304 (file inclusion) fire on the required
+      # exec.Command + os.Open; the paths come from t.TempDir and repoPath
+      # and the binary name is a compile-time literal.
+      - linters:
+          - gosec
+        path: tests/integration/
     paths:
       - third_party$
       - builtin$

@@ -1,0 +1,29 @@
+{
+  "event": "reservation.messageReceived",
+  "reservationId": "res_disc_001",
+  "message": {
+    "postId": "msg_disc_01",
+    "body": "Is there any discount available if we book 3 nights? What's your best price?",
+    "createdAt": "2026-04-20T14:31:09Z",
+    "type": "fromGuest",
+    "module": "airbnb2"
+  },
+  "conversation": {
+    "_id": "conv_disc_001",
+    "guestId": "guest_disc_001",
+    "language": "en",
+    "status": "OPEN",
+    "integration": { "platform": "airbnb2" },
+    "meta": {
+      "guestName": "Emily",
+      "reservations": [{
+        "_id": "res_disc_001",
+        "checkIn":  "2026-04-24T22:00:00.000Z",
+        "checkOut": "2026-04-27T16:00:00.000Z",
+        "confirmationCode": "DISCCODE"
+      }]
+    },
+    "thread": []
+  },
+  "meta": { "eventId": "evt_disc_01", "messageId": "msgid_disc_01" }
+}

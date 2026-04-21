@@ -1,4 +1,4 @@
-.PHONY: fmt lint vet test build run mock-up demo check
+.PHONY: fmt lint vet test test-integration build run mock-up demo check
 fmt:
 	gofumpt -l -w .
 	goimports -local github.com/chaustre/inquiryiq -l -w .
@@ -8,6 +8,8 @@ vet:
 	go vet ./...
 test:
 	go test -race -count=1 ./...
+test-integration:
+	go test -tags=integration -count=1 ./tests/integration/...
 build:
 	go build -o ./tmp/server ./cmd/server
 	go build -o ./tmp/replay ./cmd/replay

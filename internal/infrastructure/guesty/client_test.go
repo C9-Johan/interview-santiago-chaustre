@@ -15,13 +15,23 @@ import (
 	"github.com/chaustre/inquiryiq/internal/infrastructure/guesty"
 )
 
+const listingBody = `{
+  "_id":"L1",
+  "title":"Soho 2BR",
+  "bedrooms":2,"beds":3,"accommodates":4,
+  "amenities":["wifi","kitchen"],
+  "houseRules":"No parties.\nQuiet hours 10pm-8am.",
+  "prices":{"basePrice":220,"cleaningFee":40,"currency":"USD"},
+  "address":{"neighborhood":"Soho"}
+}`
+
 func TestClientGetListing(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/listings/L1" {
 			t.Errorf("unexpected path %s", r.URL.Path)
 		}
-		_, _ = w.Write([]byte(`{"id":"L1","title":"Soho 2BR","maxGuests":4,"amenities":["wifi"],"neighborhood":"Soho"}`))
+		_, _ = w.Write([]byte(listingBody))
 	}))
 	defer srv.Close()
 	c := guesty.NewClient(srv.URL, "dev", time.Second, 0)
@@ -32,22 +42,30 @@ func TestClientGetListing(t *testing.T) {
 	if got.ID != "L1" || got.MaxGuests != 4 || got.Neighborhood != "Soho" {
 		t.Fatalf("got %+v", got)
 	}
-	if got.Title != "Soho 2BR" {
-		t.Fatalf("title mismatch: %q", got.Title)
+	if got.Title != "Soho 2BR" || got.BasePrice != 220 {
+		t.Fatalf("title/price mismatch: %+v", got)
+	}
+	if len(got.HouseRules) != 2 || got.HouseRules[0] != "No parties." {
+		t.Fatalf("house rules split mismatch: %+v", got.HouseRules)
 	}
 }
 
 func TestClientCheckAvailability(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/availability" {
-			t.Errorf("path %s", r.URL.Path)
+		const wantPath = "/availability-pricing/api/calendar/listings/L1"
+		if r.URL.Path != wantPath {
+			t.Errorf("path %s, want %s", r.URL.Path, wantPath)
 		}
 		q := r.URL.Query()
-		if q.Get("listingId") != "L1" || q.Get("from") != "2026-04-24" || q.Get("to") != "2026-04-26" {
+		// endDate inclusive: checkOut 2026-04-26 → endDate 2026-04-25.
+		if q.Get("startDate") != "2026-04-24" || q.Get("endDate") != "2026-04-25" {
 			t.Errorf("query %v", q)
 		}
-		_, _ = w.Write([]byte(`{"available":true,"nights":2,"total":480}`))
+		_, _ = w.Write([]byte(`{"status":200,"data":{"days":[
+			{"date":"2026-04-24","price":240,"currency":"USD","status":"available"},
+			{"date":"2026-04-25","price":240,"currency":"USD","status":"available"}
+		]},"message":"OK"}`))
 	}))
 	defer srv.Close()
 	c := guesty.NewClient(srv.URL, "dev", time.Second, 0)
@@ -62,6 +80,27 @@ func TestClientCheckAvailability(t *testing.T) {
 	}
 }
 
+func TestClientCheckAvailabilityBlocked(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"status":200,"data":{"days":[
+			{"date":"2026-05-01","price":240,"currency":"USD","status":"available"},
+			{"date":"2026-05-02","price":0,"currency":"USD","status":"booked"}
+		]}}`))
+	}))
+	defer srv.Close()
+	c := guesty.NewClient(srv.URL, "dev", time.Second, 0)
+	from := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 5, 3, 0, 0, 0, 0, time.UTC)
+	got, err := c.CheckAvailability(context.Background(), "L1", from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Available {
+		t.Fatalf("should be unavailable when any day is not 'available': %+v", got)
+	}
+}
+
 func TestClientPostNote(t *testing.T) {
 	t.Parallel()
 	var gotBody struct {
@@ -69,7 +108,8 @@ func TestClientPostNote(t *testing.T) {
 		Type string `json:"type"`
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/conversations/C1/messages" {
+		const wantPath = "/communication/conversations/C1/send-message"
+		if r.Method != http.MethodPost || r.URL.Path != wantPath {
 			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
 		}
 		b, _ := io.ReadAll(r.Body)
@@ -86,18 +126,32 @@ func TestClientPostNote(t *testing.T) {
 	}
 }
 
+const convBody = `{
+  "_id":"C1","guestId":"G1","language":"en",
+  "integration":{"platform":"airbnb2"},
+  "meta":{"guestName":"Sarah","reservations":[
+    {"_id":"R1","checkIn":"2026-04-24T22:00:00Z","checkOut":"2026-04-26T16:00:00Z","confirmationCode":"CODE1","listingId":"L1"}
+  ]}
+}`
+
+const postsBody = `{
+  "results":[
+    {"_id":"P1","postId":"P1","body":"hi","createdAt":"2026-04-20T14:31:09Z","type":"fromGuest","module":"airbnb2"}
+  ],
+  "limit":25,"skip":0,"count":1
+}`
+
 func TestClientGetConversation(t *testing.T) {
 	t.Parallel()
-	const payload = `{
-		"_id":"C1","guestId":"G1","language":"en",
-		"integration":{"platform":"airbnb2"},
-		"meta":{"guestName":"Sarah","reservations":[
-			{"_id":"R1","checkIn":"2026-04-24T22:00:00Z","checkOut":"2026-04-26T16:00:00Z","confirmationCode":"CODE1"}
-		]},
-		"thread":[{"postId":"P1","body":"hi","createdAt":"2026-04-20T14:31:09Z","type":"fromGuest","module":"airbnb2"}]
-	}`
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(payload))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/communication/conversations/C1":
+			_, _ = w.Write([]byte(convBody))
+		case "/communication/conversations/C1/posts":
+			_, _ = w.Write([]byte(postsBody))
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
 	}))
 	defer srv.Close()
 	c := guesty.NewClient(srv.URL, "dev", time.Second, 0)
@@ -116,6 +170,29 @@ func TestClientGetConversation(t *testing.T) {
 	}
 }
 
+func TestClientGetConversationHistory(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		const wantPath = "/communication/conversations/C1/posts"
+		if r.URL.Path != wantPath {
+			t.Errorf("path %s", r.URL.Path)
+		}
+		if r.URL.Query().Get("limit") != "10" {
+			t.Errorf("limit query %v", r.URL.Query())
+		}
+		_, _ = w.Write([]byte(postsBody))
+	}))
+	defer srv.Close()
+	c := guesty.NewClient(srv.URL, "dev", time.Second, 0)
+	got, err := c.GetConversationHistory(context.Background(), "C1", 10, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].PostID != "P1" {
+		t.Fatalf("history %+v", got)
+	}
+}
+
 func TestClientRetriesOn5xx(t *testing.T) {
 	t.Parallel()
 	var calls atomic.Int32
@@ -125,7 +202,7 @@ func TestClientRetriesOn5xx(t *testing.T) {
 			w.WriteHeader(http.StatusBadGateway)
 			return
 		}
-		_, _ = w.Write([]byte(`{"id":"L1"}`))
+		_, _ = w.Write([]byte(`{"_id":"L1"}`))
 	}))
 	defer srv.Close()
 	c := guesty.NewClient(srv.URL, "dev", time.Second, 3)
@@ -151,9 +228,6 @@ func TestClientTransportErrorWrappedThroughExhaustion(t *testing.T) {
 	if !errors.Is(err, guesty.ErrRetriesExhausted) {
 		t.Fatalf("errors.Is ErrRetriesExhausted = false; err = %v", err)
 	}
-	// The underlying transport cause must be reachable — either via the
-	// error text (containing the OS-level reason) or via errors.As to a
-	// *net.OpError / url.Error unwrapped from fmt.Errorf.
 	if !strings.Contains(err.Error(), "connection refused") &&
 		!strings.Contains(err.Error(), "connect: ") {
 		t.Fatalf("error does not surface transport cause: %v", err)
@@ -163,7 +237,6 @@ func TestClientTransportErrorWrappedThroughExhaustion(t *testing.T) {
 func TestClientZeroRetriesReturnsImmediately(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {}))
-	// Close the server so subsequent dials fail with connection refused.
 	srv.Close()
 	c := guesty.NewClient(srv.URL, "dev", time.Second, 0)
 	start := time.Now()
@@ -175,8 +248,6 @@ func TestClientZeroRetriesReturnsImmediately(t *testing.T) {
 	if !errors.Is(err, guesty.ErrRetriesExhausted) {
 		t.Fatalf("errors.Is ErrRetriesExhausted = false; err = %v", err)
 	}
-	// A missed-sleep bug would waste at least one baseBackoff (200ms);
-	// 100ms is generous for CI jitter while still catching the regression.
 	if elapsed > 100*time.Millisecond {
 		t.Fatalf("retries=0 should not sleep; elapsed = %v", elapsed)
 	}

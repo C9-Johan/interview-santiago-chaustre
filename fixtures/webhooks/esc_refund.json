@@ -1,0 +1,29 @@
+{
+  "event": "reservation.messageReceived",
+  "reservationId": "res_refund_001",
+  "message": {
+    "postId": "msg_refund_01",
+    "body": "Hi, my plans changed — can I cancel and get a full refund on the deposit?",
+    "createdAt": "2026-04-20T14:31:09Z",
+    "type": "fromGuest",
+    "module": "airbnb2"
+  },
+  "conversation": {
+    "_id": "conv_refund_001",
+    "guestId": "guest_refund_001",
+    "language": "en",
+    "status": "OPEN",
+    "integration": { "platform": "airbnb2" },
+    "meta": {
+      "guestName": "Daniel",
+      "reservations": [{
+        "_id": "res_refund_001",
+        "checkIn":  "2026-04-24T22:00:00.000Z",
+        "checkOut": "2026-04-26T16:00:00.000Z",
+        "confirmationCode": "REFUNDCD"
+      }]
+    },
+    "thread": []
+  },
+  "meta": { "eventId": "evt_refund_01", "messageId": "msgid_refund_01" }
+}
