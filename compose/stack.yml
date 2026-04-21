@@ -1,4 +1,9 @@
-# Production-grade local stack for InquiryIQ. podman-compose compatible.
+# Production backing services for InquiryIQ — real data stores and the full
+# observability chain, no mocks, no tester UI. podman-compose compatible.
+#
+# Use this when you want to run the service against the same kind of
+# infrastructure it would see in production. For local dev with Mockoon +
+# the tester UI, see compose/dev.yml instead.
 #
 # Bring it up:   make stack-up    (or: podman compose -f compose/stack.yml up -d)
 # Shut it down:  make stack-down

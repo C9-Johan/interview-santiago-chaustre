@@ -1,0 +1,94 @@
+# Developer compose — everything needed to play with InquiryIQ locally:
+# service + Mockoon (fake Guesty) + tester UI. Uses in-memory stores so
+# there is no Mongo/Redis dependency; bring up compose/stack.yml alongside
+# if you want the full observability chain.
+#
+# Bring it up:      make dev-up
+# Tear it down:     make dev-down
+# UI:               http://localhost:4000
+# Service webhook:  http://localhost:8080/webhooks/guesty/message-received
+# Guesty mock:      http://localhost:3001
+#
+# The service's GUESTY_BASE_URL points at the tester, not Mockoon, so the
+# tester can intercept the outbound send-message and surface it in the UI
+# while transparently forwarding every other Guesty path to Mockoon.
+
+services:
+  mockoon:
+    image: docker.io/mockoon/cli:10.1.0
+    command:
+      - --data
+      - /data/guesty.json
+      - --port
+      - "3001"
+      - --log-transaction
+    volumes:
+      - ../fixtures/mockoon/guesty.json:/data/guesty.json:ro,Z
+    ports:
+      - "3001:3001"
+    restart: unless-stopped
+
+  tester:
+    build:
+      context: ../web/tester
+    environment:
+      TESTER_LISTEN: ":4000"
+      INQUIRYIQ_URL: "http://inquiryiq:8080"
+      MOCKOON_URL: "http://mockoon:3001"
+      GUESTY_WEBHOOK_SECRET: "whsec_demo"
+    depends_on:
+      - mockoon
+    ports:
+      - "4000:4000"
+    restart: unless-stopped
+
+  inquiryiq:
+    build:
+      context: ..
+    environment:
+      PORT: ":8080"
+      LOG_LEVEL: "info"
+      AUTO_RESPONSE_ENABLED: "true"
+
+      GUESTY_WEBHOOK_SECRET: "whsec_demo"
+      ADMIN_TOKEN: "admin-demo"
+
+      # Point the service at the tester so it intercepts the outbound
+      # send-message and forwards every other Guesty path to Mockoon.
+      GUESTY_BASE_URL: "http://tester:4000"
+      GUESTY_TOKEN: "dev"
+
+      # The service's LLM client needs a real provider. Pass through from
+      # the host shell; fails fast if unset (no silent skipping).
+      LLM_BASE_URL: "${LLM_BASE_URL:-https://api.deepseek.com/v1}"
+      LLM_API_KEY: "${LLM_API_KEY:?LLM_API_KEY must be set in your shell}"
+      LLM_MODEL_CLASSIFIER: "${LLM_MODEL_CLASSIFIER:-deepseek-chat}"
+      LLM_MODEL_GENERATOR: "${LLM_MODEL_GENERATOR:-deepseek-chat}"
+
+      # Budget guardrail — $2/day in dev is plenty for the tester workflow
+      # and caps the blast radius of a runaway prompt.
+      LLM_BUDGET_DAILY_USD: "${LLM_BUDGET_DAILY_USD:-2.0}"
+
+      DEBOUNCE_WINDOW_MS: "${DEBOUNCE_WINDOW_MS:-3000}"
+      DEBOUNCE_MAX_WAIT_MS: "${DEBOUNCE_MAX_WAIT_MS:-15000}"
+
+      # Default stores: in-memory idempotency, file-based durable logs.
+      STORE_BACKEND: "file"
+      IDEMPOTENCY_BACKEND: "memory"
+      DATA_DIR: "/data"
+
+      # Optional: forward traces/metrics to compose/stack.yml's Alloy if
+      # it's also running. Safe to leave unset in dev.
+      OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-}"
+      OTEL_EXPORTER_OTLP_INSECURE: "true"
+    volumes:
+      - inquiryiq-data:/data
+    depends_on:
+      - mockoon
+      - tester
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+volumes:
+  inquiryiq-data: {}

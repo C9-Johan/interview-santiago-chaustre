@@ -1,10 +1,12 @@
 .PHONY: fmt lint vet test test-integration build run mock-up demo check \
-	stack-up stack-down stack-logs stack-status eval eval-multi
+	stack-up stack-down stack-logs stack-status eval eval-multi \
+	dev-up dev-down dev-logs dev-status
 
 # COMPOSE defaults to `podman compose` (rootless-friendly). Override to your
 # preferred binary: make stack-up COMPOSE="docker compose"
 COMPOSE ?= podman compose
 STACK_FILE := compose/stack.yml
+DEV_FILE   := compose/dev.yml
 
 fmt:
 	gofumpt -l -w .
@@ -58,3 +60,18 @@ stack-logs:
 	$(COMPOSE) -f $(STACK_FILE) logs -f
 stack-status:
 	$(COMPOSE) -f $(STACK_FILE) ps
+
+# --- Developer stack (mocks + service + tester UI) -----------------------
+# Everything you need to drive the service from a browser. Requires
+# LLM_API_KEY in the shell; every other env has a dev default.
+dev-up:
+	$(COMPOSE) -f $(DEV_FILE) up -d --build
+	@echo "Tester UI:       http://localhost:4000"
+	@echo "Service webhook: http://localhost:8080/webhooks/guesty/message-received"
+	@echo "Guesty mock:     http://localhost:3001"
+dev-down:
+	$(COMPOSE) -f $(DEV_FILE) down
+dev-logs:
+	$(COMPOSE) -f $(DEV_FILE) logs -f
+dev-status:
+	$(COMPOSE) -f $(DEV_FILE) ps

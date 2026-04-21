@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>InquiryIQ — Tester</title>
+  <link rel="stylesheet" href="/app.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span class="dot"></span>
+      <h1>InquiryIQ tester</h1>
+      <span class="sub">play a guest, watch the bot reply or escalate</span>
+    </div>
+    <div class="toolbar">
+      <label>Guest: <input id="guest-name" value="Tester" /></label>
+      <label>Conversation: <input id="conv-id" value="conv_ui_001" /></label>
+      <label>Reservation: <input id="res-id" value="res_ui_001" /></label>
+      <label>Platform:
+        <select id="platform">
+          <option value="airbnb2">airbnb2</option>
+          <option value="bookingCom">bookingCom</option>
+          <option value="vrbo">vrbo</option>
+          <option value="manual">manual</option>
+        </select>
+      </label>
+    </div>
+  </header>
+
+  <main id="app"></main>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
