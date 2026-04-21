@@ -13,6 +13,8 @@ import (
 	"github.com/chaustre/inquiryiq/internal/application/classify"
 	"github.com/chaustre/inquiryiq/internal/application/decide"
 	"github.com/chaustre/inquiryiq/internal/application/generatereply"
+	"github.com/chaustre/inquiryiq/internal/application/promptsafety"
+	"github.com/chaustre/inquiryiq/internal/application/reviewreply"
 	"github.com/chaustre/inquiryiq/internal/application/trackconversion"
 	"github.com/chaustre/inquiryiq/internal/domain"
 	"github.com/chaustre/inquiryiq/internal/domain/repository"
@@ -39,6 +41,14 @@ type confidenceRecorder interface {
 	RecordGenerator(ctx context.Context, primaryCode string, confidence float64)
 }
 
+// replyCritic is the narrow interface the orchestrator uses to score a
+// generated reply. When nil, the orchestrator skips the critic step — kept
+// optional so tests and early-stage deployments can run without a second LLM
+// call. Satisfied by *reviewreply.UseCase.
+type replyCritic interface {
+	Review(ctx context.Context, in reviewreply.Input) reviewreply.Verdict
+}
+
 // Deps bundles every collaborator the orchestrator consumes. Construction is
 // the wiring responsibility of cmd/server; UseCase itself does not know how
 // any collaborator is built.
@@ -52,6 +62,7 @@ type Deps struct {
 	Classifications repository.ClassificationStore
 	Conversions     conversionTracker
 	Confidence      confidenceRecorder
+	Critic          replyCritic
 	Toggles         domain.Toggles
 	Thresholds      decide.Thresholds
 	Log             *slog.Logger
@@ -91,6 +102,9 @@ func (u *UseCase) Run(ctx context.Context, in Input) {
 	))
 	defer span.End()
 
+	if u.detectInjection(ctx, in) {
+		return
+	}
 	prior := u.priorContext(ctx, in)
 	cls, ok := u.classifyOrEscalate(ctx, in, prior)
 	if !ok {
@@ -121,6 +135,7 @@ func (u *UseCase) gateAndSend(ctx context.Context, in Input, cls domain.Classifi
 	ctx, span := tracer().Start(ctx, "processinquiry.Decide")
 	defer span.End()
 	issues := decide.ValidateReply(reply)
+	issues = append(issues, u.criticIssues(ctx, in, cls, reply)...)
 	final := decide.Decide(cls, reply, issues, u.d.Toggles, u.d.Thresholds)
 	span.SetAttributes(
 		attribute.Bool("decision.auto_send", final.AutoSend),
@@ -179,6 +194,79 @@ func (u *UseCase) priorContext(ctx context.Context, in Input) domain.PriorContex
 		Thread:        in.Conversation.Thread,
 		GuestProfile:  profile,
 	}
+}
+
+// criticIssues invokes the reply critic (when configured) and returns its
+// issue tags prefixed with "critic:" so the escalation record distinguishes
+// critic-found issues from validator-found ones. A nil critic returns nil.
+// A Pass=true verdict returns nil even if Issues is non-empty — only failed
+// verdicts contribute to the escalation reason.
+func (u *UseCase) criticIssues(ctx context.Context, in Input, cls domain.Classification, reply domain.Reply) []string {
+	if u.d.Critic == nil {
+		return nil
+	}
+	verdict := u.d.Critic.Review(ctx, reviewreply.Input{
+		GuestBody:      firstMessageBody(in.Turn),
+		Classification: cls,
+		Reply:          reply,
+		ToolOutputs:    toolObservationsFrom(reply),
+		Now:            in.Now,
+	})
+	if verdict.Pass {
+		return nil
+	}
+	tagged := make([]string, 0, len(verdict.Issues)+1)
+	tagged = append(tagged, "critic_rejected")
+	for i := range verdict.Issues {
+		tagged = append(tagged, "critic:"+verdict.Issues[i])
+	}
+	return tagged
+}
+
+func firstMessageBody(t domain.Turn) string {
+	if len(t.Messages) == 0 {
+		return ""
+	}
+	return t.Messages[0].Body
+}
+
+func toolObservationsFrom(r domain.Reply) []reviewreply.ToolObservation {
+	if len(r.UsedTools) == 0 {
+		return nil
+	}
+	out := make([]reviewreply.ToolObservation, 0, len(r.UsedTools))
+	for i := range r.UsedTools {
+		t := r.UsedTools[i]
+		out = append(out, reviewreply.ToolObservation{
+			Name:     t.Name,
+			Request:  string(t.Arguments),
+			Response: string(t.Result),
+		})
+	}
+	return out
+}
+
+// detectInjection short-circuits the pipeline when any message in the turn
+// trips a known prompt-injection pattern. The turn is recorded as an
+// escalation with reason=prompt_injection_suspected and the matched-pattern
+// name in Detail, so operators see the trigger without every pattern becoming
+// a distinct metric label. Returns true when the turn was handled (caller
+// must return immediately).
+func (u *UseCase) detectInjection(ctx context.Context, in Input) bool {
+	for i := range in.Turn.Messages {
+		body := in.Turn.Messages[i].Body
+		hit, pattern := promptsafety.DetectWithPattern(body)
+		if !hit {
+			continue
+		}
+		u.recordEscalation(ctx, in, domain.Classification{}, nil, domain.Decision{
+			Reason: promptsafety.ReasonPromptInjection,
+			Detail: []string{pattern},
+		})
+		_ = u.d.Idempotency.Complete(ctx, in.Turn.Key, in.Turn.LastPostID)
+		return true
+	}
+	return false
 }
 
 func (u *UseCase) recordClassifierConfidence(ctx context.Context, cls domain.Classification) {

@@ -20,6 +20,7 @@ import (
 	"github.com/chaustre/inquiryiq/internal/application/decide"
 	"github.com/chaustre/inquiryiq/internal/application/generatereply"
 	"github.com/chaustre/inquiryiq/internal/application/processinquiry"
+	"github.com/chaustre/inquiryiq/internal/application/reviewreply"
 	"github.com/chaustre/inquiryiq/internal/application/trackconversion"
 	"github.com/chaustre/inquiryiq/internal/domain"
 	"github.com/chaustre/inquiryiq/internal/domain/repository"
@@ -124,6 +125,11 @@ func buildApp(ctx context.Context, cfg *config.Config, log *slog.Logger, tel *te
 	}
 	generator := generatereply.New(llmClient, gclient, cfg.ModelGenerator, cfg.GeneratorTimeout, cfg.AgentMaxTurns)
 
+	critic, err := reviewreply.New(llmClient, cfg.ModelClassifier, cfg.ClassifierTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("reviewreply.New: %w", err)
+	}
+
 	tracker := trackconversion.New(stores.Conversions, telemetry.NewConversionRecorder(tel.Counters()), log)
 
 	orch := processinquiry.New(processinquiry.Deps{
@@ -136,6 +142,7 @@ func buildApp(ctx context.Context, cfg *config.Config, log *slog.Logger, tel *te
 		Classifications: stores.Classifications,
 		Conversions:     tracker,
 		Confidence:      telemetry.NewConfidenceRecorder(tel.Histograms()),
+		Critic:          critic,
 		Toggles:         domain.Toggles{AutoResponseEnabled: cfg.AutoResponseEnabled},
 		Thresholds:      decide.Thresholds{ClassifierMin: cfg.ClassifierMinConf, GeneratorMin: cfg.GeneratorMinConf},
 		Log:             log,

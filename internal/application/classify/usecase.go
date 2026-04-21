@@ -11,6 +11,7 @@ import (
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/xeipuuv/gojsonschema"
 
+	"github.com/chaustre/inquiryiq/internal/application/promptsafety"
 	"github.com/chaustre/inquiryiq/internal/domain"
 )
 
@@ -123,14 +124,30 @@ func buildUserMessage(in Input) string {
 	if in.Prior.Summary != "" {
 		fmt.Fprintf(&b, "prior_thread_summary: %q\n", in.Prior.Summary)
 	}
-	fmt.Fprintf(&b, "prior_thread (last %d):\n", len(in.Prior.Thread))
-	for i := range in.Prior.Thread {
-		m := in.Prior.Thread[i]
+	b.WriteString("\n")
+	b.WriteString(promptsafety.Wrap("prior_thread", priorThreadText(in.Prior)))
+	b.WriteString("\n\n")
+	b.WriteString(promptsafety.Wrap("guest_turn", guestTurnText(in.Turn)))
+	b.WriteString("\n")
+	return b.String()
+}
+
+func priorThreadText(p domain.PriorContext) string {
+	if len(p.Thread) == 0 {
+		return "(empty)"
+	}
+	var b strings.Builder
+	for i := range p.Thread {
+		m := p.Thread[i]
 		fmt.Fprintf(&b, "- [%s %s] %s\n", m.Role, m.CreatedAt.UTC().Format("2006-01-02T15:04Z"), m.Body)
 	}
-	b.WriteString("\n---\nguest_turn (classify THIS):\n")
-	for i := range in.Turn.Messages {
-		fmt.Fprintf(&b, "%s\n", in.Turn.Messages[i].Body)
+	return b.String()
+}
+
+func guestTurnText(t domain.Turn) string {
+	var b strings.Builder
+	for i := range t.Messages {
+		fmt.Fprintf(&b, "%s\n", t.Messages[i].Body)
 	}
 	return b.String()
 }
