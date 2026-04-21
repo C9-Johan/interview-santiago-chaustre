@@ -60,30 +60,50 @@ make lint                # golangci-lint, Sonar-style gate
 The integration tests auto-skip with a helpful message when `mockoon-cli` is
 not on `PATH` — they're gated, never hard dependencies.
 
-### Observability (optional)
+### Production-grade local stack (optional)
 
-Bring up a local Alloy + Tempo + Prometheus + Grafana stack with one command:
+Bring up Mongo + Valkey + their UIs + the full Alloy/Tempo/Prometheus/Grafana
+observability chain with one command:
 
 ```sh
-make obs-up        # or: make obs-up COMPOSE="docker compose"
+make stack-up        # or: make stack-up COMPOSE="docker compose"
 ```
 
-Point the service at it:
+Point the service at the stack:
 
 ```sh
+export STORE_BACKEND=mongo
+export MONGO_URI=mongodb://localhost:27017
+export IDEMPOTENCY_BACKEND=redis
+export REDIS_ADDR=localhost:6379
 export OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4318
 export OTEL_EXPORTER_OTLP_INSECURE=true
 ./tmp/server
 ```
 
-Grafana is at <http://localhost:3000> (anonymous Admin). The pre-provisioned
-"InquiryIQ — Traces" dashboard shows `processinquiry.Run` turns and
-`gen_ai.*` spans from LLM calls. `make obs-down` tears it all down; nothing
-in the stack is required for the core service to work.
+- Grafana: <http://localhost:3000> — pre-provisioned dashboards for *Traces*
+  and *Conversions* (managed vs converted counters, conversion rate).
+- Mongo Express: <http://localhost:8081>
+- RedisInsight: <http://localhost:5540>
+
+`make stack-down` tears it all down; defaults remain `STORE_BACKEND=file` and
+in-memory idempotency so the core service still runs without the stack.
 
 To additionally forward LLM spans to LangSmith, set `LANGSMITH_API_KEY` —
-the langsmith-go `traceopenai` middleware injects gen_ai attributes and
-the LangSmith span processor attaches to the same OTEL provider.
+the langsmith-go `traceopenai` middleware injects gen_ai attributes and the
+LangSmith span processor attaches to the same OTEL provider.
+
+### Conversion tracking
+
+When the orchestrator posts an auto-reply on a conversation that carries a
+Guesty reservation, the reservation is recorded in `ConversionStore` and the
+`inquiryiq.conversations.managed` counter ticks. A companion webhook,
+`POST /webhooks/guesty/reservation-updated`, consumes Guesty's
+`reservation.updated` event; when the status transitions to `confirmed` for
+a bot-managed reservation, `inquiryiq.conversations.converted` ticks and the
+store records a terminal status. Both counters carry `platform` and
+`primary_code` attributes so Grafana slices conversion rate by channel and
+Traffic-Light classification.
 
 ---
 
@@ -196,9 +216,9 @@ tests/
 - **Operator UI / Slack notifier.** A tiny web panel or a Slack webhook on
   every `domain.Escalation` so a human can pick up the turn inside 5
   minutes. The escalation store already carries everything a reviewer needs.
-- **Observability hook-up.** `obs` threads trace IDs through context;
-  plumbing them into OpenTelemetry + structured log shipping is a one-day
-  addition.
+- **Log shipping.** Traces and metrics ship to the local Grafana stack
+  today; piping structured logs (Loki / OpenTelemetry logs SDK) so every
+  turn is searchable by `trace_id` is the next step.
 - **Confidence calibration telemetry.** Log the classifier's
   self-reported confidence alongside the observed auto-reply acceptance /
   rejection signal so the 0.65 threshold becomes data-driven, not a guess.

@@ -1,0 +1,125 @@
+# Production-grade local stack for InquiryIQ. podman-compose compatible.
+#
+# Bring it up:   make stack-up    (or: podman compose -f compose/stack.yml up -d)
+# Shut it down:  make stack-down
+#
+# Services:
+#   mongo:8.0        primary data store (webhooks, classifications, conversions, …)
+#   valkey:8         Redis-protocol cache + idempotency claims
+#   mongo-express    browser UI for the mongo database (http://localhost:8081)
+#   redisinsight     browser UI for valkey (http://localhost:5540)
+#   alloy            OTLP collector, also scrapes /metrics (traces + metrics)
+#   tempo            traces backend
+#   prometheus       metrics backend (scrapes Alloy)
+#   grafana          dashboards at http://localhost:3000
+#
+# Point the service at the stack:
+#   STORE_BACKEND=mongo MONGO_URI=mongodb://localhost:27017 MONGO_DATABASE=inquiryiq
+#   IDEMPOTENCY_BACKEND=redis REDIS_ADDR=localhost:6379
+#   OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4318
+
+services:
+  mongo:
+    image: docker.io/mongo:8.0
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    restart: unless-stopped
+
+  valkey:
+    image: docker.io/valkey/valkey:8.0-alpine
+    command: ["valkey-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - valkey-data:/data
+    restart: unless-stopped
+
+  mongo-express:
+    image: docker.io/mongo-express:1.0.2
+    environment:
+      - ME_CONFIG_MONGODB_SERVER=mongo
+      - ME_CONFIG_MONGODB_PORT=27017
+      - ME_CONFIG_BASICAUTH=false
+    ports:
+      - "8081:8081"
+    depends_on:
+      - mongo
+    restart: unless-stopped
+
+  redisinsight:
+    image: docker.io/redis/redisinsight:2.58
+    ports:
+      - "5540:5540"
+    volumes:
+      - redisinsight-data:/data
+    restart: unless-stopped
+
+  alloy:
+    image: docker.io/grafana/alloy:v1.5.1
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    volumes:
+      - ./alloy/config.alloy:/etc/alloy/config.alloy:ro,Z
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "12345:12345" # Alloy UI + /metrics
+    depends_on:
+      - tempo
+    restart: unless-stopped
+
+  tempo:
+    image: docker.io/grafana/tempo:2.8.1
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    volumes:
+      - ./tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro,Z
+      - tempo-data:/var/tempo
+    ports:
+      - "3200:3200"   # Tempo HTTP (query)
+    restart: unless-stopped
+
+  prometheus:
+    image: docker.io/prom/prometheus:v3.1.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=24h
+      - --web.enable-remote-write-receiver
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro,Z
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    depends_on:
+      - alloy
+    restart: unless-stopped
+
+  grafana:
+    image: docker.io/grafana/grafana:11.4.0
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_AUTH_DISABLE_LOGIN_FORM=true
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro,Z
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro,Z
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - tempo
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  mongo-data: {}
+  valkey-data: {}
+  redisinsight-data: {}
+  tempo-data: {}
+  prometheus-data: {}
+  grafana-data: {}

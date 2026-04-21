@@ -1,9 +1,10 @@
-.PHONY: fmt lint vet test test-integration build run mock-up demo check obs-up obs-down obs-logs obs-status
+.PHONY: fmt lint vet test test-integration build run mock-up demo check \
+	stack-up stack-down stack-logs stack-status
 
 # COMPOSE defaults to `podman compose` (rootless-friendly). Override to your
-# preferred binary: make obs-up COMPOSE="docker compose"
+# preferred binary: make stack-up COMPOSE="docker compose"
 COMPOSE ?= podman compose
-OBS_FILE := compose/observability.yml
+STACK_FILE := compose/stack.yml
 
 fmt:
 	gofumpt -l -w .
@@ -27,19 +28,24 @@ demo: build
 	AUTO_REPLAY_ON_BOOT=true ./tmp/server
 check: fmt vet lint test
 
-# --- Observability stack --------------------------------------------------
-# Alloy (OTLP receiver) + Tempo (traces) + Prometheus + Grafana at :3000.
-# Point the service at it: OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4318
-obs-up:
-	$(COMPOSE) -f $(OBS_FILE) up -d
-	@echo "Grafana:    http://localhost:3000  (anonymous Admin)"
-	@echo "Alloy UI:   http://localhost:12345"
-	@echo "Tempo API:  http://localhost:3200"
-	@echo "Prometheus: http://localhost:9090"
+# --- Production-grade local stack -----------------------------------------
+# Mongo + Valkey + mongo-express + RedisInsight + Alloy + Tempo + Prometheus
+# + Grafana. Point the service at it:
+#   STORE_BACKEND=mongo MONGO_URI=mongodb://localhost:27017
+#   IDEMPOTENCY_BACKEND=redis REDIS_ADDR=localhost:6379
+#   OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4318
+stack-up:
+	$(COMPOSE) -f $(STACK_FILE) up -d
+	@echo "Grafana:        http://localhost:3000  (anonymous Admin)"
+	@echo "Alloy UI:       http://localhost:12345"
+	@echo "Tempo API:      http://localhost:3200"
+	@echo "Prometheus:     http://localhost:9090"
+	@echo "Mongo Express:  http://localhost:8081"
+	@echo "RedisInsight:   http://localhost:5540"
 	@echo "Set OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4318 on the service."
-obs-down:
-	$(COMPOSE) -f $(OBS_FILE) down
-obs-logs:
-	$(COMPOSE) -f $(OBS_FILE) logs -f
-obs-status:
-	$(COMPOSE) -f $(OBS_FILE) ps
+stack-down:
+	$(COMPOSE) -f $(STACK_FILE) down
+stack-logs:
+	$(COMPOSE) -f $(STACK_FILE) logs -f
+stack-status:
+	$(COMPOSE) -f $(STACK_FILE) ps

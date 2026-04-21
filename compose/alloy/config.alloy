@@ -1,6 +1,8 @@
-// Alloy pipeline for InquiryIQ. Receives OTLP traces from the service, batches
-// them, and forwards to Tempo. Metrics endpoint is exposed on :12345 so
-// Grafana can scrape Alloy's own telemetry if needed.
+// Alloy pipeline for InquiryIQ. Receives OTLP traces and metrics from the
+// service on :4317/:4318, batches them, and forwards:
+//   traces  → Tempo (otlp/gRPC)
+//   metrics → Prometheus via remote_write (the exporter converts OTel → Prom)
+// Alloy's own runtime metrics are at :12345/metrics.
 
 otelcol.receiver.otlp "default" {
   grpc {
@@ -12,12 +14,14 @@ otelcol.receiver.otlp "default" {
 
   output {
     traces  = [otelcol.processor.batch.default.input]
+    metrics = [otelcol.processor.batch.default.input]
   }
 }
 
 otelcol.processor.batch "default" {
   output {
-    traces = [otelcol.exporter.otlp.tempo.input]
+    traces  = [otelcol.exporter.otlp.tempo.input]
+    metrics = [otelcol.exporter.prometheus.default.input]
   }
 }
 
@@ -27,5 +31,15 @@ otelcol.exporter.otlp "tempo" {
     tls {
       insecure = true
     }
+  }
+}
+
+otelcol.exporter.prometheus "default" {
+  forward_to = [prometheus.remote_write.default.receiver]
+}
+
+prometheus.remote_write "default" {
+  endpoint {
+    url = "http://prometheus:9090/api/v1/write"
   }
 }
