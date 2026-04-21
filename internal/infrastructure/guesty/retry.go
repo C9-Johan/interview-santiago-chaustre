@@ -44,6 +44,9 @@ func retryAfter(resp *http.Response) (time.Duration, bool) {
 	if err != nil {
 		return 0, false
 	}
+	if s <= 0 {
+		return 0, false
+	}
 	return time.Duration(s) * time.Second, true
 }
 
@@ -57,6 +60,8 @@ func backoff(attempt int, base time.Duration) time.Duration {
 func randFloat() float64 {
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {
+		// On entropy failure return the midpoint; jitter is advisory
+		// and correctness does not rely on the exact multiplier.
 		return 0.5
 	}
 	// Top 53 bits → IEEE-754 double mantissa, divided by 2^53 → [0,1).

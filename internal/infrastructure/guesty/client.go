@@ -156,7 +156,10 @@ func conversationFromWire(wire wireConversationResponse) domain.Conversation {
 	return conv
 }
 
-// do executes a JSON request with retry on 429/5xx and transport errors.
+// do executes a JSON request with retry on 429/5xx and transport errors. On
+// exhaustion the returned error wraps both ErrRetriesExhausted and the last
+// observed cause (transport error or synthesized status error), so callers
+// can inspect with errors.Is / errors.As.
 func (c *Client) do(ctx context.Context, method, path string, body, out any) error {
 	// any: body is any JSON-marshalable Go value; out is a user-supplied
 	// pointer. Both are JSON-boundary use cases permitted by conventions.
@@ -164,22 +167,26 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	if err != nil {
 		return err
 	}
-	var lastStatus int
+	var lastErr error
 	for attempt := 0; attempt <= c.retries; attempt++ {
 		resp, sendErr := c.sendOnce(ctx, method, path, bodyBytes)
-		wait, done, doneErr := c.handleAttempt(resp, sendErr, out, attempt)
+		wait, done, attemptErr := c.handleAttempt(resp, sendErr, out, attempt, method, path)
 		if done {
-			return doneErr
+			return attemptErr
 		}
-		lastStatus = 0
-		if resp != nil {
-			lastStatus = resp.StatusCode
+		lastErr = attemptErr
+		// Last attempt: no point sleeping — skip the wait and exit.
+		if attempt == c.retries {
+			break
 		}
 		if werr := waitOrCancel(ctx, wait); werr != nil {
 			return werr
 		}
 	}
-	return fmt.Errorf("%w: last status %d", ErrRetriesExhausted, lastStatus)
+	if lastErr == nil {
+		return ErrRetriesExhausted
+	}
+	return fmt.Errorf("%w: %w", ErrRetriesExhausted, lastErr)
 }
 
 func marshalBody(body any) ([]byte, error) {
@@ -209,26 +216,30 @@ func (c *Client) sendOnce(ctx context.Context, method, path string, bodyBytes []
 
 // handleAttempt inspects the outcome of one attempt. It returns the wait
 // duration before the next attempt (if retrying), a done flag signaling the
-// caller to stop looping, and the error to surface when done.
+// caller to stop looping, and the error for this attempt. When done is true
+// the error is terminal; when done is false the error is the "last cause" for
+// exhaustion reporting.
 func (c *Client) handleAttempt(
-	resp *http.Response, sendErr error, out any, attempt int,
+	resp *http.Response, sendErr error, out any, attempt int, method, path string,
 ) (time.Duration, bool, error) {
 	if sendErr != nil {
+		cause := fmt.Errorf("guesty %s %s: %w", method, path, sendErr)
 		wait := shouldRetry(nil, attempt, c.baseBackoff)
 		if wait == 0 {
-			return 0, true, fmt.Errorf("guesty request: %w", sendErr)
+			return 0, true, cause
 		}
-		return wait, false, nil
+		return wait, false, cause
 	}
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return 0, true, decodeInto(resp, out)
 	}
+	cause := fmt.Errorf("guesty %s %s: status %d", method, path, resp.StatusCode)
 	wait := shouldRetry(resp, attempt, c.baseBackoff)
 	_ = resp.Body.Close()
 	if wait == 0 {
-		return 0, true, fmt.Errorf("guesty: status %d", resp.StatusCode)
+		return 0, true, cause
 	}
-	return wait, false, nil
+	return wait, false, cause
 }
 
 func decodeInto(resp *http.Response, out any) error {

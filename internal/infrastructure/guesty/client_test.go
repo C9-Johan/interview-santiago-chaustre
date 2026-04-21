@@ -3,9 +3,11 @@ package guesty_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -133,6 +135,54 @@ func TestClientRetriesOn5xx(t *testing.T) {
 	}
 	if calls.Load() != 3 {
 		t.Fatalf("calls: got %d, want 3", calls.Load())
+	}
+}
+
+func TestClientTransportErrorWrappedThroughExhaustion(t *testing.T) {
+	t.Parallel()
+	// Port 1 is reserved (tcpmux) and unbound on every normal host; dialing
+	// it fails at the transport layer with ECONNREFUSED, which is exactly
+	// the condition we want to surface through retry exhaustion.
+	c := guesty.NewClient("http://127.0.0.1:1", "dev", 200*time.Millisecond, 1)
+	_, err := c.GetListing(context.Background(), "L1")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, guesty.ErrRetriesExhausted) {
+		t.Fatalf("errors.Is ErrRetriesExhausted = false; err = %v", err)
+	}
+	// The underlying transport cause must be reachable — either via the
+	// error text (containing the OS-level reason) or via errors.As to a
+	// *net.OpError / url.Error unwrapped from fmt.Errorf.
+	if !strings.Contains(err.Error(), "connection refused") &&
+		!strings.Contains(err.Error(), "connect: ") {
+		t.Fatalf("error does not surface transport cause: %v", err)
+	}
+}
+
+func TestClientZeroRetriesReturnsImmediately(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {}))
+	// Close the server so subsequent dials fail with connection refused.
+	srv.Close()
+	c := guesty.NewClient(srv.URL, "dev", time.Second, 0)
+	start := time.Now()
+	_, err := c.GetListing(context.Background(), "L1")
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, guesty.ErrRetriesExhausted) {
+		t.Fatalf("errors.Is ErrRetriesExhausted = false; err = %v", err)
+	}
+	// A missed-sleep bug would waste at least one baseBackoff (200ms);
+	// 100ms is generous for CI jitter while still catching the regression.
+	if elapsed > 100*time.Millisecond {
+		t.Fatalf("retries=0 should not sleep; elapsed = %v", elapsed)
+	}
+	if !strings.Contains(err.Error(), "connection refused") &&
+		!strings.Contains(err.Error(), "connect: ") {
+		t.Fatalf("transport cause not wrapped: %v", err)
 	}
 }
 
