@@ -60,6 +60,31 @@ make lint                # golangci-lint, Sonar-style gate
 The integration tests auto-skip with a helpful message when `mockoon-cli` is
 not on `PATH` — they're gated, never hard dependencies.
 
+### Observability (optional)
+
+Bring up a local Alloy + Tempo + Prometheus + Grafana stack with one command:
+
+```sh
+make obs-up        # or: make obs-up COMPOSE="docker compose"
+```
+
+Point the service at it:
+
+```sh
+export OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4318
+export OTEL_EXPORTER_OTLP_INSECURE=true
+./tmp/server
+```
+
+Grafana is at <http://localhost:3000> (anonymous Admin). The pre-provisioned
+"InquiryIQ — Traces" dashboard shows `processinquiry.Run` turns and
+`gen_ai.*` spans from LLM calls. `make obs-down` tears it all down; nothing
+in the stack is required for the core service to work.
+
+To additionally forward LLM spans to LangSmith, set `LANGSMITH_API_KEY` —
+the langsmith-go `traceopenai` middleware injects gen_ai attributes and
+the LangSmith span processor attaches to the same OTEL provider.
+
 ---
 
 ## Architecture
