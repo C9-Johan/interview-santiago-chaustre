@@ -37,6 +37,11 @@ services:
       MOCKOON_URL: "http://mockoon:3001"
       GUESTY_WEBHOOK_SECRET: "whsec_demo"
       ADMIN_TOKEN: "admin-demo"
+    # Mount the static folder so CSS/JS/HTML edits are visible on browser
+    # refresh without a container rebuild. The Go binary is still baked in
+    # at image-build time — Tilt's tester-rebuild resource handles that.
+    volumes:
+      - ../web/tester/static:/app/static:ro,Z
     depends_on:
       - mockoon
     ports:
@@ -82,10 +87,27 @@ services:
       REDIS_ADDR: "${REDIS_ADDR:-}"
       DATA_DIR: "/data"
 
-      # Optional: forward traces/metrics to compose/stack.yml's Alloy if
-      # it's also running. Safe to leave unset in dev.
-      OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-}"
+      # Forward traces/metrics to Alloy when the stack is merged in (Tilt
+      # dev mode pulls in compose/stack.yml by default so this resolves).
+      # Override with your own collector endpoint via .env.local when needed.
+      OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-alloy:4318}"
       OTEL_EXPORTER_OTLP_INSECURE: "true"
+
+      # --- Optional: LangSmith tracing ---------------------------------
+      # Set LANGSMITH_API_KEY in .env.local to capture every LLM run in
+      # LangSmith. Safe to leave unset — the langsmith provider no-ops
+      # when the key is missing (see internal/infrastructure/langsmith).
+      LANGSMITH_API_KEY: "${LANGSMITH_API_KEY:-}"
+      LANGSMITH_PROJECT: "${LANGSMITH_PROJECT:-inquiryiq}"
+      LANGSMITH_ENDPOINT: "${LANGSMITH_ENDPOINT:-}"
+
+      # --- Optional: LangChain-style pass-through ----------------------
+      # Honored by any LangChain client you may add later; unused today
+      # but surfaced here so a contributor can flip them on in one place.
+      LANGCHAIN_TRACING_V2: "${LANGCHAIN_TRACING_V2:-}"
+      LANGCHAIN_API_KEY: "${LANGCHAIN_API_KEY:-}"
+      LANGCHAIN_PROJECT: "${LANGCHAIN_PROJECT:-}"
+      LANGCHAIN_ENDPOINT: "${LANGCHAIN_ENDPOINT:-}"
     volumes:
       - inquiryiq-data:/data
     depends_on:

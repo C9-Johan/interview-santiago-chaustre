@@ -16,20 +16,36 @@
 # so it works on every machine. Override via `COMPOSE=docker\ compose tilt up`.
 #
 # Modes:
-#   MODE=dev  (default) — compose/dev.yml: Mockoon + service + tester UI
-#   MODE=prod           — stack + dev + prod.override merged (Mongo, Valkey,
-#                         Alloy, Tempo, Prom, Grafana + real store backends)
+#   MODE=dev  (default) — service + mocks + tester UI (file stores)
+#   MODE=prod           — same topology, real store backends (Mongo + Valkey)
+#
+# Stack toggle (orthogonal to MODE):
+#   STACK=full    (default) — also start Mongo, Valkey, Alloy, Tempo,
+#                             Prometheus, Grafana, Mongo Express and
+#                             RedisInsight from compose/stack.yml
+#   STACK=minimal           — dev.yml only; fastest startup, no observability
 #
 # Compose binary + mode:
 compose_bin = os.getenv('COMPOSE', 'podman compose')
 mode        = os.getenv('MODE', 'dev')
 
+# STACK=full (default) brings up compose/stack.yml alongside dev so
+# Grafana, Alloy, Tempo, Prometheus, Mongo, Valkey, Mongo Express and
+# RedisInsight are all reachable. STACK=minimal keeps startup fast when
+# you only want the service + mocks + tester UI.
+stack_opt = os.getenv('STACK', 'full')
+include_stack = stack_opt != 'minimal'
+
 if mode == 'prod':
     compose_files = '-f compose/stack.yml -f compose/dev.yml -f compose/prod.override.yml'
     mode_label    = 'prod'
+    include_stack = True  # prod always needs the real backends.
+elif include_stack:
+    compose_files = '-f compose/stack.yml -f compose/dev.yml'
+    mode_label    = 'dev'
 else:
     compose_files = '-f compose/dev.yml'
-    mode_label    = 'dev'
+    mode_label    = 'dev-lite'
 
 def compose_cmd(verb):
     return '{bin} {files} {verb}'.format(bin=compose_bin, files=compose_files, verb=verb)
@@ -65,20 +81,22 @@ local_resource(
 # Stack links — shown as clickable buttons next to every resource. In dev
 # mode only the dev-stack URLs are reachable; prod mode also boots the full
 # observability chain so the Grafana/Tempo/Prom/Mongo/Redis links resolve.
-dev_links = [
+base_links = [
     link('http://localhost:4000',  'Tester UI'),
     link('http://localhost:8080/healthz', 'Service /healthz'),
     link('http://localhost:3001',  'Mockoon (fake Guesty)'),
 ]
-prod_links = dev_links + [
+observability_links = [
     link('http://localhost:3000',  'Grafana'),
+    link('http://localhost:12345', 'Alloy UI'),
     link('http://localhost:9090',  'Prometheus'),
     link('http://localhost:3200',  'Tempo'),
-    link('http://localhost:12345', 'Alloy UI'),
+]
+store_links = [
     link('http://localhost:8081',  'Mongo Express'),
     link('http://localhost:5540',  'RedisInsight'),
 ]
-stack_links = prod_links if mode == 'prod' else dev_links
+stack_links = base_links + (observability_links + store_links if include_stack else [])
 
 local_resource(
     'compose-up',
@@ -128,15 +146,54 @@ compose_logs('mockoon',   'mocks',   [link('http://localhost:3001', 'Mockoon API
 compose_logs('inquiryiq', 'service', [link('http://localhost:8080/healthz', '/healthz')])
 compose_logs('tester',    'ui',      [link('http://localhost:4000', 'Tester UI')])
 
-# Observability log tails — only rendered in prod mode where these
-# containers actually exist. Clicking the resource name opens their UI.
-if mode == 'prod':
-    compose_logs('grafana',       'observability', [link('http://localhost:3000',  'Grafana')])
-    compose_logs('prometheus',    'observability', [link('http://localhost:9090',  'Prometheus')])
-    compose_logs('tempo',         'observability', [link('http://localhost:3200',  'Tempo')])
-    compose_logs('alloy',         'observability', [link('http://localhost:12345', 'Alloy UI')])
-    compose_logs('mongo-express', 'stores',        [link('http://localhost:8081',  'Mongo Express')])
-    compose_logs('redisinsight',  'stores',        [link('http://localhost:5540',  'RedisInsight')])
+# Observability + store containers are gated on STACK=full (default). In
+# STACK=minimal the stack.yml compose file isn't merged, so these
+# containers don't exist and can't be tailed.
+if include_stack:
+    compose_logs('grafana',    'observability', [link('http://localhost:3000',  'Grafana')])
+    compose_logs('prometheus', 'observability', [link('http://localhost:9090',  'Prometheus')])
+    compose_logs('tempo',      'observability', [link('http://localhost:3200',  'Tempo')])
+    compose_logs('alloy',      'observability', [link('http://localhost:12345', 'Alloy UI')])
+
+    # Data stores — the database containers themselves, plus browser UIs.
+    # In dev mode the service still uses file/memory stores, but Mongo
+    # and Valkey are running so you can flip STORE_BACKEND=mongo /
+    # IDEMPOTENCY_BACKEND=redis via .env.local without restarting compose.
+    compose_logs('mongo',         'stores', [link('http://localhost:8081', 'Mongo Express')])
+    compose_logs('valkey',        'stores', [link('http://localhost:5540', 'RedisInsight')])
+    compose_logs('mongo-express', 'stores', [link('http://localhost:8081', 'Mongo Express')])
+    compose_logs('redisinsight',  'stores', [link('http://localhost:5540', 'RedisInsight')])
+
+# --- Hot reload on source change ----------------------------------------
+# backend-rebuild watches every Go source the service is built from and
+# re-runs compose build + --force-recreate so the container picks up the
+# new binary. Initial state is on; Tilt's file watcher fires it on save.
+# Typical cycle is 5–10s (module cache warm, no dependency re-download).
+local_resource(
+    'backend-rebuild',
+    cmd=with_env(compose_cmd('up -d --build --force-recreate --no-deps inquiryiq')),
+    deps=['cmd/server/', 'internal/', 'go.mod', 'go.sum'],
+    ignore=['**/*_test.go'],
+    labels=['service'],
+    resource_deps=['compose-up'],
+    auto_init=False,
+    allow_parallel=False,
+)
+
+# tester-rebuild covers the tester's own Go code. Static assets (HTML /
+# CSS / JS under web/tester/static) are volume-mounted into the container
+# (see compose/dev.yml) — edits to those are live on the next browser
+# refresh without touching this resource.
+local_resource(
+    'tester-rebuild',
+    cmd=with_env(compose_cmd('up -d --build --force-recreate --no-deps tester')),
+    deps=['web/tester/main.go', 'web/tester/go.mod', 'web/tester/go.sum', 'web/tester/Dockerfile'],
+    ignore=['**/*_test.go'],
+    labels=['ui'],
+    resource_deps=['compose-up'],
+    auto_init=False,
+    allow_parallel=False,
+)
 
 # --- Tests, lint, eval --------------------------------------------------
 # Manual buttons so you control when they run — CI runs them on every
