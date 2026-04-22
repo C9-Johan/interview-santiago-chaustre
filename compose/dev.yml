@@ -73,8 +73,12 @@ services:
       DEBOUNCE_MAX_WAIT_MS: "${DEBOUNCE_MAX_WAIT_MS:-15000}"
 
       # Default stores: in-memory idempotency, file-based durable logs.
-      STORE_BACKEND: "file"
-      IDEMPOTENCY_BACKEND: "memory"
+      # Override these via compose/prod.override.yml (make up-prod) to
+      # point at Mongo + Valkey from compose/stack.yml.
+      STORE_BACKEND: "${STORE_BACKEND:-file}"
+      IDEMPOTENCY_BACKEND: "${IDEMPOTENCY_BACKEND:-memory}"
+      MONGO_URI: "${MONGO_URI:-}"
+      REDIS_ADDR: "${REDIS_ADDR:-}"
       DATA_DIR: "/data"
 
       # Optional: forward traces/metrics to compose/stack.yml's Alloy if

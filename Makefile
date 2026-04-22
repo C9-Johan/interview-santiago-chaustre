@@ -2,13 +2,19 @@
 	stack-up stack-down stack-logs stack-status eval eval-multi \
 	dev-up dev-down dev-logs dev-status \
 	e2e e2e-wait e2e-smoke e2e-full tilt-up tilt-down \
-	mise-verify mise-tools mise-env
+	mise-verify mise-tools mise-env \
+	env-check up up-prod down down-prod logs
 
 # COMPOSE defaults to `podman compose` (rootless-friendly). Override to your
 # preferred binary: make stack-up COMPOSE="docker compose"
 COMPOSE ?= podman compose
-STACK_FILE := compose/stack.yml
-DEV_FILE   := compose/dev.yml
+STACK_FILE    := compose/stack.yml
+DEV_FILE      := compose/dev.yml
+PROD_OVERRIDE := compose/prod.override.yml
+# Layered compose for prod-like mode — stack (real backends + observability)
+# merged with dev (service + mocks + tester UI), overridden to flip the
+# service's stores/OTLP at the real ones.
+PROD_FILES := -f $(STACK_FILE) -f $(DEV_FILE) -f $(PROD_OVERRIDE)
 
 fmt:
 	gofumpt -l -w .
@@ -78,13 +84,71 @@ dev-logs:
 dev-status:
 	$(COMPOSE) -f $(DEV_FILE) ps
 
-# --- End-to-end ----------------------------------------------------------
-# `make e2e` is the "does everything still work" button for the interviewer.
-# Brings the dev stack up, waits for health, runs the smoke script, and
-# leaves the stack running so you can click around the tester UI afterward.
-# Tear it all down with `make dev-down` (or `make e2e-full` which does it
-# for you).
-e2e: dev-up e2e-wait e2e-smoke
+# --- Top-level entry points ---------------------------------------------
+# Two modes, same UX:
+#   make up        = mock mode    — Mockoon + service (in-memory/file stores) + tester UI
+#   make up-prod   = prod-like    — adds Mongo + Valkey + Alloy/Tempo/Prom/Grafana,
+#                                   flips service backends to the real ones
+# Both bring the stack up, wait for /healthz, and leave it running so you
+# can click around. Shut down with `make down` / `make down-prod`.
+# LLM_API_KEY must be in the shell env (dev.yml fails loudly if missing).
+
+# Fast pre-flight. Fails with a useful message if LLM_API_KEY is unset.
+# Re-runs `mise run env:check` for visibility into defaults + secrets.
+env-check:
+	@test -n "$$LLM_API_KEY" || { \
+		echo "✗ LLM_API_KEY unset."; \
+		echo "  cp .env.local.example .env.local, fill in the key, then either:"; \
+		echo "    - activate the mise shell hook (mise.jdx.dev/getting-started)"; \
+		echo "    - or run this target via:  mise exec -- make $@"; \
+		exit 1; \
+	}
+	@mise run env:check 2>/dev/null || true
+	@echo "✓ env ok — LLM_API_KEY set"
+
+# Mock mode: one command for the full inquiry loop with everything mocked.
+up: env-check
+	$(COMPOSE) -f $(DEV_FILE) up -d --build
+	./scripts/wait-for-health.sh
+	@echo ""
+	@echo "✓ Mock stack up:"
+	@echo "    Tester UI       http://localhost:4000"
+	@echo "    Service webhook http://localhost:8080/webhooks/guesty/message-received"
+	@echo "    Guesty mock     http://localhost:3001"
+	@echo "  Smoke:  make e2e-smoke       Down:  make down"
+
+down:
+	$(COMPOSE) -f $(DEV_FILE) down
+
+# Prod-like mode: same UI, but service talks to real Mongo + Valkey and
+# exports traces/metrics to Alloy → Tempo/Prom → Grafana. Guesty is still
+# Mockoon (no real creds). Bringing up 3 merged compose files puts every
+# service on one network so inquiryiq reaches mongo/valkey/alloy by name.
+up-prod: env-check
+	$(COMPOSE) $(PROD_FILES) up -d --build
+	./scripts/wait-for-health.sh
+	@echo ""
+	@echo "✓ Prod-like stack up:"
+	@echo "    Tester UI       http://localhost:4000"
+	@echo "    Service webhook http://localhost:8080/webhooks/guesty/message-received"
+	@echo "    Grafana         http://localhost:3000  (anonymous Admin)"
+	@echo "    Tempo API       http://localhost:3200"
+	@echo "    Prometheus      http://localhost:9090"
+	@echo "    Mongo Express   http://localhost:8081"
+	@echo "    RedisInsight    http://localhost:5540"
+	@echo "    Alloy UI        http://localhost:12345"
+	@echo "  Smoke:  make e2e-smoke       Down:  make down-prod"
+
+down-prod:
+	$(COMPOSE) $(PROD_FILES) down
+
+logs:
+	$(COMPOSE) -f $(DEV_FILE) logs -f
+
+# --- End-to-end (legacy aliases) ----------------------------------------
+# `make e2e` keeps the old "bring up dev + smoke" behavior for muscle memory.
+# New code should prefer `make up` / `make e2e-smoke`.
+e2e: up e2e-smoke
 
 e2e-wait:
 	./scripts/wait-for-health.sh

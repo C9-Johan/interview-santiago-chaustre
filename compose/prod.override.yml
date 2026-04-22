@@ -1,0 +1,25 @@
+# Prod-like override — layered on top of dev.yml + stack.yml.
+#
+# Usage (via `make up-prod`):
+#   podman compose -f compose/stack.yml -f compose/dev.yml -f compose/prod.override.yml up -d
+#
+# Merging multiple -f files puts every service on one shared default
+# network, so inquiryiq can reach mongo/valkey/alloy by service name.
+# We still keep Mockoon (no real Guesty creds) but flip the service's
+# backends to the real Mongo + Valkey and point OTLP at Alloy.
+
+services:
+  inquiryiq:
+    environment:
+      STORE_BACKEND: "mongo"
+      IDEMPOTENCY_BACKEND: "redis"
+      MONGO_URI: "mongodb://mongo:27017"
+      REDIS_ADDR: "valkey:6379"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "alloy:4318"
+      OTEL_EXPORTER_OTLP_INSECURE: "true"
+    depends_on:
+      - mockoon
+      - tester
+      - mongo
+      - valkey
+      - alloy
