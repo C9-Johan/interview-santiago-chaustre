@@ -1,7 +1,8 @@
 .PHONY: fmt lint vet test test-integration build run mock-up demo check \
 	stack-up stack-down stack-logs stack-status eval eval-multi \
 	dev-up dev-down dev-logs dev-status \
-	e2e e2e-wait e2e-smoke e2e-full tilt-up tilt-down
+	e2e e2e-wait e2e-smoke e2e-full tilt-up tilt-down \
+	mise-verify mise-tools mise-env
 
 # COMPOSE defaults to `podman compose` (rootless-friendly). Override to your
 # preferred binary: make stack-up COMPOSE="docker compose"
@@ -97,6 +98,34 @@ e2e-full:
 	$(MAKE) dev-up
 	$(MAKE) e2e-wait
 	-$(MAKE) e2e-smoke; rc=$$?; $(MAKE) dev-down; exit $$rc
+
+# --- mise verification ---------------------------------------------------
+# Proves the pinned toolchain installs, resolves, and runs end-to-end. Good
+# smoke test after editing `.mise.toml` or onboarding a new machine.
+#   make mise-verify    # install + tool versions + env check
+#   make mise-tools     # just print resolved versions
+#   make mise-env       # just print masked env (flags unset secrets)
+mise-verify: mise-tools mise-env
+	@echo ""
+	@echo "✓ mise toolchain + env OK. Next:"
+	@echo "    make check   # fmt + vet + lint + race-tests"
+	@echo "    make e2e     # compose up + smoke"
+
+mise-tools:
+	@command -v mise >/dev/null || { echo "mise not on PATH — see https://mise.jdx.dev"; exit 1; }
+	mise install
+	@echo ""
+	@echo "--- resolved tool versions ---"
+	@mise exec -- go version
+	@mise exec -- golangci-lint --version | head -1
+	@mise exec -- gofumpt -version
+	@mise exec -- tilt version
+	@mise exec -- jq --version
+
+mise-env:
+	@echo ""
+	@echo "--- resolved env (secrets masked) ---"
+	mise run env:check
 
 # --- Tilt ----------------------------------------------------------------
 # Dashboard at http://localhost:10350 with per-service logs, port-forwards,
