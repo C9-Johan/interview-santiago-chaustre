@@ -130,3 +130,46 @@ func TestSendRejectsEmptyBody(t *testing.T) {
 		t.Fatalf("empty body should 400, got %d", rr.Code)
 	}
 }
+
+// TestGetConversationProxiesToMockoon locks in the routing fix for
+// conversation fetches: the tester only intercepts the send-message POST;
+// every other /communication/* path must reach Mockoon so the service's
+// conversation-history lookup works. Regression guard — a prior dispatcher
+// swallowed every /communication/* request into the internal mux and
+// returned 404, which made the async flush abort before classification.
+func TestGetConversationProxiesToMockoon(t *testing.T) {
+	hits := 0
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && r.URL.Path == "/communication/conversations/conv_test" {
+			hits++
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{"ok":true}`))
+			return
+		}
+		w.WriteHeader(404)
+	}))
+	defer mock.Close()
+
+	s := newServer(config{
+		listen:        ":0",
+		serviceURL:    "http://unused",
+		mockoonURL:    mock.URL,
+		webhookSecret: "whsec_test",
+		staticDir:     "static",
+	}, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+
+	ts := httptest.NewServer(s.routes())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/communication/conversations/conv_test")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("want 200 from mockoon, got %d", resp.StatusCode)
+	}
+	if hits != 1 {
+		t.Fatalf("want mockoon hit once, got %d", hits)
+	}
+}

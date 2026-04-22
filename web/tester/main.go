@@ -157,11 +157,15 @@ func (s *server) routes() http.Handler {
 
 	// Single dispatcher: API + intercept routes first (most specific), then
 	// the Mockoon proxy for every Guesty-shaped path, then the static file
-	// server as the fallthrough for the UI itself.
+	// server as the fallthrough for the UI itself. The send-message POST is
+	// the only `/communication/*` path we intercept — every other one has to
+	// flow through to Mockoon, otherwise the service's conversation-history
+	// lookup hits a 404 and the flush aborts before classification.
 	root := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case strings.HasPrefix(r.URL.Path, "/api/"),
-			strings.HasPrefix(r.URL.Path, "/communication/"):
+		case strings.HasPrefix(r.URL.Path, "/api/"):
+			api.ServeHTTP(w, r)
+		case isInterceptedSend(r):
 			api.ServeHTTP(w, r)
 		case isGuestyPath(r.URL.Path):
 			s.mockoonRev.ServeHTTP(w, r)
@@ -170,6 +174,19 @@ func (s *server) routes() http.Handler {
 		}
 	})
 	return requestLogger(s.log)(root)
+}
+
+// isInterceptedSend matches the one Guesty path the tester hijacks —
+// POST /communication/conversations/{id}/send-message — so the UI can
+// surface the outbound reply in the conversation log instead of silently
+// handing it off to Mockoon.
+func isInterceptedSend(r *http.Request) bool {
+	if r.Method != http.MethodPost {
+		return false
+	}
+	p := r.URL.Path
+	return strings.HasPrefix(p, "/communication/conversations/") &&
+		strings.HasSuffix(p, "/send-message")
 }
 
 // isGuestyPath flags the URL prefixes the service uses to talk to Guesty.
