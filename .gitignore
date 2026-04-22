@@ -227,3 +227,4 @@ tags
 .env.local
 !.env.local.example
 
+/web/tester/tester
