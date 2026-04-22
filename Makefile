@@ -1,4 +1,4 @@
-.PHONY: fmt lint vet test test-integration build run mock-up demo check \
+.PHONY: fmt lint vet test test-integration build run run-prod run-bin mock-up demo check \
 	stack-up stack-down stack-logs stack-status eval eval-multi \
 	dev-up dev-down dev-logs dev-status \
 	e2e e2e-wait e2e-smoke e2e-full tilt-up tilt-down \
@@ -39,7 +39,17 @@ eval: build
 # per-locale report. Use for release gates where one locale must not regress.
 eval-multi: build
 	./tmp/eval -dir eval/sets
-run: build
+# `make run` is the interactive dev loop: Tilt dashboard at :10350 with
+# env pre-flight, live logs, and one-click buttons for smoke/unit/lint/eval.
+# MODE=prod swaps dev-only mocks for the full Mongo + Valkey + observability
+# stack (same as `make up-prod` but inside the dashboard).
+run:
+	tilt up
+run-prod:
+	MODE=prod tilt up
+# Legacy no-compose runner — build + exec the bare binary. Useful if you
+# want to attach a debugger; otherwise prefer `make run`.
+run-bin: build
 	./tmp/server
 mock-up:
 	mockoon-cli start -d fixtures/mockoon/guesty.json --port 3001 --log-transaction

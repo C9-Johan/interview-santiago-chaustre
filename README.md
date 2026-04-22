@@ -19,26 +19,33 @@ mise install
 # Secrets: copy the example and drop your LLM key in
 cp .env.local.example .env.local   # edit → set LLM_API_KEY=sk-...
 
-# One command, full mock stack: Mockoon + service + browser tester UI
-make up                            # → http://localhost:4000
+# Interactive dev loop: Tilt dashboard with env check, live logs, and
+# one-click smoke/unit/lint/eval triggers
+make run                           # → http://localhost:10350  (dashboard)
+                                   # → http://localhost:4000   (tester UI)
 ```
 
-`make up` brings up podman-compose, waits for `/healthz`, and leaves
-everything running. Open the tester UI, send a message, watch the service
-classify / reply / escalate live.
+`make run` launches Tilt. It preflights `LLM_API_KEY`, brings up Mockoon +
+the service + the tester UI through podman-compose, waits for `/healthz`,
+and surfaces everything in the dashboard. Code changes under `internal/`,
+`cmd/`, `tests/` re-trigger unit/integration tests automatically; there
+are manual buttons for `e2e-smoke`, `lint`, and `eval-classifier`.
 
-Need real backends? `make up-prod` adds Mongo + Valkey + Alloy/Tempo/
-Prom/Grafana and flips the service's stores to them. Same UI.
+Need real backends? `make run-prod` does the same inside the full stack
+(Mongo + Valkey + Alloy/Tempo/Prom/Grafana, service backends flipped).
+
+Prefer a headless one-shot? `make up` / `make up-prod` bring the stack up
+without Tilt and return to the shell.
 
 Top-level entry points:
 
 | Command | What it does |
 |---|---|
+| `make run` / `make run-prod` | Tilt dashboard — interactive dev loop |
+| `make up` / `make up-prod` | Headless compose, prints URLs, returns |
+| `make down` / `make down-prod` | Stop the corresponding stack |
 | `make env-check` | Pre-flight: fails if `LLM_API_KEY` unset, prints masked env |
-| `make up` / `make down` | Mock mode: Mockoon + service + tester UI |
-| `make up-prod` / `make down-prod` | Prod-like: adds Mongo + Valkey + observability |
 | `make e2e-smoke` | Scripted happy-path + escalation smoke against a running stack |
-| `make tilt-up` | Tilt dashboard (logs + one-click test runners) at `:10350` |
 | `make test` / `make test-integration` | Unit + race / integration tests |
 | `make check` | `fmt + vet + lint + race-tests` — the full gate |
 | `make eval` | Classifier regression against `eval/golden_set.json` |

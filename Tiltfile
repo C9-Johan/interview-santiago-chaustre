@@ -1,60 +1,106 @@
 # Tiltfile — developer dashboard for InquiryIQ.
 #
-# Tilt's built-in docker_compose() shells out to the "docker-compose" /
-# "docker compose" CLI, which podman users typically do not have. So we
-# drive the compose stack through plain `local_resource` calls that shell
-# out to whichever compose binary is on PATH — `podman compose` by default,
-# override with `COMPOSE=docker\ compose tilt up`.
+# One command dev loop:  `make run`  (or `tilt up` directly)
+# Dashboard:              http://localhost:10350
+# Tester UI (dev stack):  http://localhost:4000
 #
-# What Tilt buys you here: a single UI at http://localhost:10350 with live
-# logs, quick-restart buttons, and one-click triggers for unit tests,
-# integration tests, lint, eval, and the full end-to-end smoke script.
+# What Tilt gives you on top of `make up`:
+#   • Live per-service logs rendered side-by-side in the browser
+#   • Preflight env-check surfaces missing LLM_API_KEY before compose runs
+#   • Auto-waits for /healthz and surfaces the smoke/unit/lint/eval buttons
+#   • Code edits under internal/, cmd/, tests/ re-trigger unit/integration
+#     tests automatically (manual buttons still available)
 #
-# Bring it up:   tilt up          (or: make tilt-up)
-# Shut it down:  tilt down        (or: make tilt-down)
-
-# Allow overriding the compose binary via env so docker users aren't locked
-# out. Default is podman compose.
+# Tilt's built-in docker_compose() shells out to `docker compose`, which
+# podman-rootless users don't have. We drive compose through local_resource
+# so it works on every machine. Override via `COMPOSE=docker\ compose tilt up`.
+#
+# Modes:
+#   MODE=dev  (default) — compose/dev.yml: Mockoon + service + tester UI
+#   MODE=prod           — stack + dev + prod.override merged (Mongo, Valkey,
+#                         Alloy, Tempo, Prom, Grafana + real store backends)
+#
+# Compose binary + mode:
 compose_bin = os.getenv('COMPOSE', 'podman compose')
-dev_file    = './compose/dev.yml'
+mode        = os.getenv('MODE', 'dev')
+
+if mode == 'prod':
+    compose_files = '-f compose/stack.yml -f compose/dev.yml -f compose/prod.override.yml'
+    mode_label    = 'prod'
+else:
+    compose_files = '-f compose/dev.yml'
+    mode_label    = 'dev'
 
 def compose_cmd(verb):
-    return '{bin} -f {file} {verb}'.format(bin=compose_bin, file=dev_file, verb=verb)
+    return '{bin} {files} {verb}'.format(bin=compose_bin, files=compose_files, verb=verb)
 
-# --- Stack lifecycle -----------------------------------------------------
-# compose-up runs on `tilt up`; compose-down fires on tilt's stop via
-# the cmd_button below. Keeping it as a local_resource means tilt sees
-# stdout/stderr in its per-service log pane.
+# Wrap a shell command so it sources .env.local first — matches the
+# precedence of mise and `make up`. `set -a` auto-exports every var so
+# child processes (podman compose, scripts) see them. Missing file is
+# silently ignored; the preflight catches genuine missing-secret cases.
+def with_env(cmd):
+    return 'set -a; [ -f .env.local ] && . ./.env.local; set +a; ' + cmd
+
+# --- Preflight: env check ------------------------------------------------
+# Blocks every downstream resource until LLM_API_KEY is set. Without this,
+# `podman compose up` dies with a "LLM_API_KEY must be set" error from the
+# ${VAR:?} substitution, which is confusing if you're new to the repo.
 local_resource(
-    'compose-up',
-    cmd=compose_cmd('up -d --build'),
+    'env-check',
+    cmd=with_env("""
+        if [ -z "${LLM_API_KEY:-}" ]; then
+            echo "✗ LLM_API_KEY unset — cp .env.local.example .env.local, fill in, then re-run"
+            exit 1
+        fi
+        echo "✓ env ok — mode=%s"
+    """ % mode_label),
     labels=['stack'],
     auto_init=True,
-    trigger_mode=TRIGGER_MODE_MANUAL,
+    allow_parallel=False,
+)
+
+# --- Stack lifecycle -----------------------------------------------------
+# compose-up runs on `tilt up`. Auto-runs after env-check passes.
+# compose-down is manual (click to tear down without exiting Tilt).
+local_resource(
+    'compose-up',
+    cmd=with_env(compose_cmd('up -d --build')),
+    labels=['stack'],
+    resource_deps=['env-check'],
+    auto_init=True,
     allow_parallel=False,
 )
 
 local_resource(
     'compose-down',
-    cmd=compose_cmd('down'),
+    cmd=with_env(compose_cmd('down')),
     labels=['stack'],
     auto_init=False,
     trigger_mode=TRIGGER_MODE_MANUAL,
 )
 
+# Auto-wait for /healthz so the tester UI / smoke button are actually
+# clickable when this turns green.
+local_resource(
+    'wait-for-health',
+    cmd='./scripts/wait-for-health.sh',
+    labels=['stack'],
+    resource_deps=['compose-up'],
+    auto_init=True,
+)
+
 # --- Per-service log tails ----------------------------------------------
-# Each of these runs a `compose logs -f <service>` so Tilt renders the
-# container's stdout in its UI. Pressing ▶ restarts the tail if the
-# container restarts under you.
+# Each `compose logs -f <service>` surfaces the container's stdout in
+# Tilt's UI pane. ▶ restarts the tail if the container restarts under you.
 def compose_logs(service, label):
     local_resource(
         service,
-        serve_cmd=compose_cmd('logs -f ' + service),
+        serve_cmd=with_env(compose_cmd('logs -f ' + service)),
         labels=[label],
         resource_deps=['compose-up'],
         readiness_probe=probe(
             period_secs=2,
-            exec=exec_action(['true']),  # serve_cmd starts immediately
+            exec=exec_action(['true']),
         ),
     )
 
@@ -62,19 +108,12 @@ compose_logs('mockoon',   'mocks')
 compose_logs('inquiryiq', 'service')
 compose_logs('tester',    'ui')
 
-# --- Health & smoke tests -----------------------------------------------
-local_resource(
-    'wait-for-health',
-    cmd='./scripts/wait-for-health.sh',
-    labels=['tests'],
-    resource_deps=['compose-up'],
-    auto_init=False,
-    trigger_mode=TRIGGER_MODE_MANUAL,
-)
-
+# --- Tests, lint, eval --------------------------------------------------
+# Manual buttons so you control when they run — CI runs them on every
+# change, but interactively you want to decide.
 local_resource(
     'e2e-smoke',
-    cmd='./scripts/wait-for-health.sh && ./scripts/e2e-smoke.sh',
+    cmd=with_env('./scripts/wait-for-health.sh && ./scripts/e2e-smoke.sh'),
     labels=['tests'],
     resource_deps=['compose-up'],
     auto_init=False,
@@ -110,7 +149,7 @@ local_resource(
 
 local_resource(
     'eval-classifier',
-    cmd='make eval',
+    cmd=with_env('make eval'),
     labels=['tests'],
     auto_init=False,
     trigger_mode=TRIGGER_MODE_MANUAL,
