@@ -1,0 +1,20 @@
+# Gitignored paths that `wt step copy-ignored` should copy into new
+# worktrees. Whitelist — anything not listed here (tmp/, data/, coverage.out,
+# build artefacts, .worktrees/ …) is left behind.
+#
+# The goal is a cold-start-free worktree: same secrets, same deps, no
+# re-install, no re-download.
+
+# Env + secrets — gitignored .env* needs to travel so a new worktree
+# works out of the box (LLM_API_KEY etc.).
+.env
+.env.*
+!.env.*.example
+
+# Go vendored modules — if someone has vendored the module graph, copy it
+# so `go build` doesn't re-download.
+vendor/
+
+# Node deps — tester UI (web/tester) may grow a node_modules in future;
+# any nested one gets copied too.
+node_modules/

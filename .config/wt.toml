@@ -1,0 +1,8 @@
+# worktrunk project config — team-wide automation for `wt` commands.
+# See: https://worktrunk.dev/hook/ and https://worktrunk.dev/step/
+
+# After `wt switch --create <branch>` finishes cloning the worktree,
+# copy gitignored files whitelisted in `.worktreeinclude` (env files,
+# vendor/, node_modules/) so the new worktree starts hot.
+[post-start]
+copy = "wt step copy-ignored"
