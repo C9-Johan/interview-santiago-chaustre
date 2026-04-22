@@ -1,345 +1,273 @@
-# InquiryIQ — Cloud9 Interview Vertical Slice
+# InquiryIQ
 
-Go service that receives a Guesty `reservation.messageReceived` webhook,
-classifies the guest message with an LLM, generates a C.L.O.S.E.R. reply via an
-agent loop that calls Guesty tools for real listing/availability facts, and
-either auto-sends the reply as an internal Guesty note or escalates the turn
-to a human — based on a deterministic rules gate, not the LLM's opinion.
+A Go service that reads inbound Guesty guest messages, classifies them with an
+LLM, drafts a C.L.O.S.E.R. reply, and **either** auto-sends it as an internal
+note **or** escalates to a human — based on deterministic rules, not the LLM's
+opinion.
 
-See [`CHALLENGE.md`](./CHALLENGE.md) for the brief and
-[`GUESTY_WEBHOOK_CONTRACT.md`](./GUESTY_WEBHOOK_CONTRACT.md) for the real
-webhook shape.
+Brief: [`CHALLENGE.md`](./CHALLENGE.md) · Webhook contract:
+[`GUESTY_WEBHOOK_CONTRACT.md`](./GUESTY_WEBHOOK_CONTRACT.md)
 
 ---
 
-## Run it
-
-### Prerequisites
-
-- Go 1.26+
-- [Mockoon CLI](https://mockoon.com/cli/) for a local Guesty stand-in:
-  `npm i -g @mockoon/cli`
-- A DeepSeek or OpenAI API key (optional — only needed to hit a real LLM).
-
-### Demo (no cloud dependencies)
+## Run it in 30 seconds
 
 ```sh
-# Terminal 1 — fake Guesty
-make mock-up
+# One-time toolchain bootstrap (go, golangci-lint, tilt, jq via mise)
+mise install
 
-# Terminal 2 — service with auto-replay that posts the fixtures to itself
-export GUESTY_WEBHOOK_SECRET=whsec_demo
-export LLM_API_KEY=sk-xxx           # DeepSeek works via LLM_BASE_URL default
-make demo
+# Secrets: copy the example and drop your LLM key in
+cp .env.local.example .env.local   # edit → set LLM_API_KEY=sk-...
+
+# One command, full mock stack: Mockoon + service + browser tester UI
+make up                            # → http://localhost:4000
 ```
 
-`make demo` boots the server with `AUTO_REPLAY_ON_BOOT=true`, which waits a
-short delay and then POSTs every fixture in `fixtures/webhooks/` to the
-service's own webhook endpoint with valid Svix signatures. You'll see
-classifications, auto-sends, and escalations flow through the logs.
+`make up` brings up podman-compose, waits for `/healthz`, and leaves
+everything running. Open the tester UI, send a message, watch the service
+classify / reply / escalate live.
 
-### Hit the webhook manually
+Need real backends? `make up-prod` adds Mongo + Valkey + Alloy/Tempo/
+Prom/Grafana and flips the service's stores to them. Same UI.
 
-```sh
-export GUESTY_WEBHOOK_SECRET=whsec_demo
-export LLM_API_KEY=sk-xxx
-make build && ./tmp/server
-```
+Top-level entry points:
 
-Then from a second shell sign and POST a fixture (the `cmd/replay` CLI does
-this for you — see `cmd/replay/main.go`).
-
-### Tests
-
-```sh
-make test                # unit tests + race detector
-make test-integration    # end-to-end: boots the service against Mockoon + fake LLM
-make lint                # golangci-lint, Sonar-style gate
-```
-
-The integration tests auto-skip with a helpful message when `mockoon-cli` is
-not on `PATH` — they're gated, never hard dependencies.
-
-### Eval — Stage-A classifier regression
-
-`eval/golden_set.json` is a labeled set of guest turns (one per Traffic Light
-code, plus language, burst, priority-arbiter, prompt-injection, and the three
-risk-flag categories). `make eval` builds the `cmd/eval` CLI and runs every
-case through the real classifier against your configured LLM, printing
-per-case failures and aggregate accuracy. Exits non-zero on any failing case,
-so it's CI-gateable.
-
-```sh
-export LLM_API_KEY=sk-xxx
-make eval                        # 1.0 accuracy gate (strict)
-./tmp/eval -min-accuracy 0.9     # triage mode: pass if >=90% of primary codes match
-./tmp/eval -set eval/golden_set.json  # explicit set path
-```
-
-The unit tests in `internal/application/eval/` exercise the harness with a
-fake classifier, so the harness itself is covered without burning an LLM
-quota.
-
-### Production-grade local stack (optional)
-
-Bring up Mongo + Valkey + their UIs + the full Alloy/Tempo/Prometheus/Grafana
-observability chain with one command:
-
-```sh
-make stack-up        # or: make stack-up COMPOSE="docker compose"
-```
-
-Point the service at the stack:
-
-```sh
-export STORE_BACKEND=mongo
-export MONGO_URI=mongodb://localhost:27017
-export IDEMPOTENCY_BACKEND=redis
-export REDIS_ADDR=localhost:6379
-export OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4318
-export OTEL_EXPORTER_OTLP_INSECURE=true
-./tmp/server
-```
-
-- Grafana: <http://localhost:3000> — pre-provisioned dashboards for *Traces*
-  and *Conversions* (managed vs converted counters, conversion rate).
-- Mongo Express: <http://localhost:8081>
-- RedisInsight: <http://localhost:5540>
-
-`make stack-down` tears it all down; defaults remain `STORE_BACKEND=file` and
-in-memory idempotency so the core service still runs without the stack.
-
-To additionally forward LLM spans to LangSmith, set `LANGSMITH_API_KEY` —
-the langsmith-go `traceopenai` middleware injects gen_ai attributes and the
-LangSmith span processor attaches to the same OTEL provider.
-
-### Conversion tracking
-
-When the orchestrator posts an auto-reply on a conversation that carries a
-Guesty reservation, the reservation is recorded in `ConversionStore` and the
-`inquiryiq.conversations.managed` counter ticks. A companion webhook,
-`POST /webhooks/guesty/reservation-updated`, consumes Guesty's
-`reservation.updated` event; when the status transitions to `confirmed` for
-a bot-managed reservation, `inquiryiq.conversations.converted` ticks and the
-store records a terminal status. Both counters carry `platform` and
-`primary_code` attributes so Grafana slices conversion rate by channel and
-Traffic-Light classification.
+| Command | What it does |
+|---|---|
+| `make env-check` | Pre-flight: fails if `LLM_API_KEY` unset, prints masked env |
+| `make up` / `make down` | Mock mode: Mockoon + service + tester UI |
+| `make up-prod` / `make down-prod` | Prod-like: adds Mongo + Valkey + observability |
+| `make e2e-smoke` | Scripted happy-path + escalation smoke against a running stack |
+| `make tilt-up` | Tilt dashboard (logs + one-click test runners) at `:10350` |
+| `make test` / `make test-integration` | Unit + race / integration tests |
+| `make check` | `fmt + vet + lint + race-tests` — the full gate |
+| `make eval` | Classifier regression against `eval/golden_set.json` |
+| `make mise-verify` | Prove the toolchain installs and resolves correctly |
 
 ---
 
-## Architecture
+## The design decisions that matter
 
-Four layers, one-way dependency (outer → inner). Domain knows nothing about
-transport or infra; infra imports domain but never the reverse.
+Every decision below answers a specific failure mode. If you're reviewing the
+code, these are the points where I'd have pushed back in a design review.
 
-```
-cmd/
-  server/                    main.go — wires dependencies, serves HTTP
-  replay/                    CLI to re-feed persisted webhook bodies through the pipeline
-internal/
-  transport/http/            handlers, chi router, Svix signature verification, DTOs
-  application/
-    processinquiry/          orchestrator: prior-context → classify → GATE 1 → generate → GATE 2 → send/escalate
-    classify/                Stage A: one LLM call, strict JSON schema, retry-once-on-invalid
-    generatereply/           Stage B: agent loop calling get_listing/check_availability/get_conversation_history
-    decide/                  pure GATE 1 + GATE 2 rules, reply validator, restricted-content filter
-  domain/                    entities, value objects, taxonomy codes, sentinel errors
-    repository/              exported interfaces (GuestyClient, LLMClient, stores, resolver, debouncer, clock)
-    mappers/                 pure funcs at layer boundaries (webhook → domain)
-  infrastructure/
-    guesty/                  HTTP client against the real Guesty Open API (listings, calendar, conversations, send-message)
-    llm/                     OpenAI-compatible SDK with configurable BaseURL (DeepSeek drops in without code changes)
-    debouncer/               per-conversation timed debouncer with max-wait clamp
-    store/memstore/          in-memory idempotency, escalation ring, conversation memory
-    store/filestore/         JSONL-backed webhook log, classification log, escalation log (durable replay source)
-    config/                  env-var loader with typed defaults
-    clock/                   real + fake wall clocks behind an interface
-    obs/                     trace-id plumbing, structured slog helpers
-fixtures/
-  mockoon/guesty.json        Mockoon environment modelling the real Guesty API shapes
-  webhooks/*.json            Signed-webhook fixtures: happy, burst, escalation paths
-tests/
-  integration/               end-to-end tests with a real Mockoon subprocess + scripted fake LLM
-```
+### 1. The LLM is not a judge
 
-### Request flow at a glance
+The auto-send gate is a **hard rules check** in the application layer, not
+a field in the LLM's JSON response. The model classifies (`primary_code`,
+`confidence`, `risk_flag`, `extracted_entities`); the code decides.
+
+> **Why:** letting the model approve its own replies is how hallucinated
+> send-messages leak to real guests. The gate (`decide.PreGenerate` +
+> `decide.Decide`) is a few dozen lines of boolean logic that a human can
+> audit. The LLM never sees the toggle state or the price cap.
+
+### 2. Two stages with a cheap gate in between
+
+Stage A (`classify/`) is **one LLM call, strict JSON schema, retry-once**.
+Stage B (`generatereply/`) is **an agent loop** against real Guesty tool
+calls — `get_listing`, `check_availability`, `get_conversation_history`.
+
+> **Why:** ~80% of turns get rejected at GATE 1 (wrong code, low confidence,
+> risk flag). Classifying first means we never pay for the expensive agent
+> loop on turns we're going to escalate anyway.
+
+### 3. Webhook acknowledges in milliseconds; everything real runs async
+
+The HTTP handler verifies the Svix signature, dedupes on `postId`, hands the
+message to the debouncer, and returns `202`. Classification/generation
+happens on a bounded worker pool.
+
+> **Why:** Guesty retries on non-2xx within a few hundred ms. A slow LLM
+> provider cannot cascade into webhook-delivery storms. The worker pool
+> bounds concurrency so we don't stampede the LLM provider on a burst.
+
+### 4. Debounce per conversation, clamp with a max-wait
+
+Each conversation has a 15-second window (re-armed on every message) with a
+hard 60-second ceiling from the first message of the turn.
+
+> **Why:** guests send bursts — `"Hi"` → `"is it free next weekend?"` →
+> `"for 4 people"`. Classifying each in isolation produces three bad
+> classifications; classifying once when the turn is complete produces one
+> good one. The max-wait stops a slow typist from stalling the pipeline
+> indefinitely.
+
+### 5. Backpressure never silently drops
+
+When the worker queue saturates, the turn is **rejected to an escalation**
+with `reason="backpressure_drop"` and published on the event bus.
+
+> **Why:** the two common alternatives are wrong. Blocking the debouncer
+> breaks invariant 3. Dropping silently means an inquiry vanished with no
+> audit trail. Escalating surfaces the saturation to both operators (in the
+> escalation feed) and dashboards (the counter), so the response is "scale
+> the pool" not "guess what broke".
+
+### 6. Every external dependency is a consumer-side interface
+
+Stores, HTTP clients, the clock, the debouncer, the event publisher — all
+declared as small unexported interfaces **in the consumer package**, not
+re-exported from infrastructure.
+
+> **Why:** Redis, Postgres, or an alt LLM provider drop in by writing a new
+> struct in `infrastructure/` that satisfies the interface structurally.
+> Zero application-layer changes, zero interface churn. The existing
+> `memstore` → `filestore` → `mongostore` swap is exactly this pattern.
+
+### 7. LLM client is provider-agnostic
+
+`infrastructure/llm` wraps `sashabaranov/go-openai` with a configurable
+`BaseURL`. DeepSeek is the default; OpenAI or any OpenAI-compatible
+endpoint is a one-env-var change.
+
+> **Why:** API compatibility shifts under you. Lock-in to a single
+> provider's Go SDK means a rewrite when pricing or availability moves.
+
+### 8. Mocks are real HTTP servers, not in-process fakes
+
+Guesty is stood up as [Mockoon](https://mockoon.com/cli/); the LLM is an
+`httptest.Server` with scripted callbacks.
+
+> **Why:** an in-process fake can't catch a bug in status-code handling,
+> auth headers, or request serialization. Tests that exercise the real
+> HTTP path find real bugs.
+
+### 9. Operator kill-switch with an admin bearer token
+
+`POST /admin/auto-response {"auto_response_enabled": false}` flips the
+toggle atomically. Turns arriving while the switch is off short-circuit
+**before classification** — zero LLM tokens spent while the switch is off.
+
+> **Why:** incidents need a kill-switch that doesn't require a deploy.
+> Short-circuiting before the LLM call means cost-driven incidents (runaway
+> tokens, provider billing) are actually contained by the flip, not just
+> quieted.
+
+### 10. Automatic daily budget cap
+
+The budget watcher rides on the token recorder. Every LLM call adds USD to
+a per-UTC-day tally; breaching `LLM_BUDGET_DAILY_USD` flips the kill-switch
+through the same admin path, emits `budget.exceeded` on the bus, and ticks
+the `inquiryiq.budget.flips` counter.
+
+> **Why:** humans are bad at noticing gradual overspend. A finance guardrail
+> that trips automatically turns a $1000 invoice into a $50 one and a page.
+> Self-heals at UTC midnight so it's safe to leave on.
+
+### 11. Event bus for "downstream should care" fan-out
+
+Escalations, conversions, backpressure drops, toggle flips, and budget
+trips all publish on an in-process Watermill pub/sub. The default
+subscribers just log; production subs can page PagerDuty, post to Slack,
+or ship to an analytics warehouse.
+
+> **Why:** the orchestrator shouldn't know about Slack. Adding a notifier
+> should be "write a subscriber" not "add a field to the use case".
+
+### 12. Sonar-style lint gate, no suppressions
+
+`funlen 100/50`, `cyclop 30`, `gocognit 20`, `nestif 5`, `dupl 150`. No
+`//nolint`, no `#nosec`. Test files are exempt from size/complexity checks
+but still lint for correctness.
+
+> **Why:** LLM-generated Go's most common failure modes are 200-line
+> functions, deeply nested if-chains, and copy-paste blocks. The gate
+> catches them before they ship.
+
+---
+
+## Request flow
 
 ```mermaid
 flowchart TD
-    W([Guesty webhook POST /webhooks/guesty/message-received])
-    W --> H[Svix sig verify<br/>+ 5min drift<br/>+ dedup on postId]
+    W([POST /webhooks/guesty/message-received])
+    W --> H[Svix verify + dedup on postId]
     H -- invalid --> R401([401/400])
     H -- duplicate --> A202dup([202 duplicate])
     H -- valid --> Buf[Per-conversation debouncer<br/>15s window, 60s max-wait]
     H --> Ack([202 ack])
-    Buf -- host replied / cancel --> Cancel([skip turn])
-    Buf -- flush --> Inj{promptsafety.Detect<br/>injection patterns?}
+    Buf -- host replied --> Cancel([skip turn])
+    Buf -- flush --> Pool{Worker pool<br/>queue full?}
+    Pool -- yes --> EscBP[Escalation<br/>backpressure_drop]
+    Pool -- no --> KS{auto_response_enabled?}
+    KS -- no --> EscKS[Escalation<br/>auto_disabled]
+    KS -- yes --> Inj{prompt injection?}
     Inj -- yes --> EscInj[Escalation<br/>prompt_injection_suspected]
-    Inj -- no --> Cls[Stage A: Classify<br/>LLM + JSON schema<br/>retry-once-on-invalid]
-    Cls --> Pri[EnforcePriority §6<br/>RED > Y5 > Y2 > ... > GRAY]
-    Pri --> G1{GATE 1: PreGenerate<br/>low-risk code?<br/>risk_flag? confidence >= 0.65?}
+    Inj -- no --> Cls[Stage A: Classify<br/>LLM + schema + retry-once]
+    Cls --> Pri[Enforce priority §6<br/>RED > Y5 > Y2 > ... > GRAY]
+    Pri --> G1{GATE 1<br/>low-risk code?<br/>confidence >= 0.65?}
     G1 -- no --> EscG1[Escalation]
-    G1 -- yes --> Gen[Stage B: Generate<br/>agent loop:<br/>get_listing / check_availability /<br/>get_conversation_history]
-    Gen --> Crit[Reply critic<br/>CLOSER + restricted + factual<br/>fail-closed on LLM error]
-    Crit --> Val[Validate reply<br/>hedging, beats,<br/>restricted content]
-    Val --> G2{GATE 2: Decide<br/>critic pass? validator clean?<br/>generator confidence >= 0.70?}
+    G1 -- yes --> Gen[Stage B: Generate<br/>agent loop: get_listing /<br/>check_availability / thread]
+    Gen --> Crit[Reply critic<br/>CLOSER + restricted + factual]
+    Crit --> G2{GATE 2<br/>confidence >= 0.70?<br/>validator clean?}
     G2 -- no --> EscG2[Escalation]
-    G2 -- yes --> Post[POST /communication/conversations/:id/send-message<br/>type: note]
-    Post --> Mark[trackconversion.MarkManaged<br/>counter: conversations.managed]
+    G2 -- yes --> Post[Guesty send-message<br/>type: note]
+    Post --> Mark[counter: conversations.managed]
     Mark --> Close[Update memory<br/>+ idempotency complete]
-    EscInj --> Close
-    EscG1 --> Close
-    EscG2 --> Close
 
-    RU([Guesty webhook POST /webhooks/guesty/reservation-updated])
-    RU --> Conv{status transitioned<br/>to confirmed<br/>on a managed reservation?}
-    Conv -- yes --> CConv[counter:<br/>conversations.converted]
+    RU([POST /webhooks/guesty/reservation-updated])
+    RU --> Conv{confirmed on a managed reservation?}
+    Conv -- yes --> CConv[counter: conversations.converted]
     Conv -- no --> Skip([no-op])
 ```
 
-1. **HTTP handler** reads the raw body once (needed for signature verification),
-   verifies the Svix `v1,<base64-hmac-sha256>` signature against the
-   `svix-id`/`svix-timestamp`/`raw body` tuple with a 5-minute drift check,
-   dedupes on `(conversation key, postId)`, records the raw webhook for
-   replay, and hands the message to the debouncer. Returns `202` in
-   milliseconds.
+---
 
-2. **Debouncer** merges back-to-back messages on the same conversation into
-   one `domain.Turn` with a 15s window (configurable) clamped by a 60s
-   max-wait, then fires the flush callback. Host replies cancel pending
-   flushes.
+## Layout
 
-3. **Orchestrator** (`processinquiry`):
-   - Loads prior conversation memory + thread context.
-   - Calls **Stage A classifier** — one LLM call, schema-validated JSON
-     output, retry-once-on-invalid.
-   - Runs **GATE 1** (`decide.PreGenerate`): drops turns whose code is not in
-     the low-risk set, sets `risk_flag`, falls below the classifier
-     confidence threshold, or hits the always-escalate codes (Y2, Y5, R1, R2).
-   - Calls **Stage B generator** — agent loop against the real Guesty client
-     via OpenAI tool calls (`get_listing`, `check_availability`,
-     `get_conversation_history`). Max-turns reflection prompt guarantees a
-     `domain.Reply` even when the budget runs out.
-   - Runs **GATE 2** (`decide.Decide`): re-checks the classifier verdict,
-     confidence on the generator side, C.L.O.S.E.R. beat coverage, hedging
-     language, and the restricted-content regex (off-platform payments,
-     address leakage, guarantee language, discount offers).
-   - Calls Guesty `POST /communication/conversations/:id/send-message` with
-     `type: "note"` on auto-send; otherwise records a `domain.Escalation`.
-   - Writes classification + escalation records to the durable JSONL stores
-     and updates the conversation memory.
-
-### Key design decisions
-
-- **LLM-agnostic client.** `infrastructure/llm` wraps `sashabaranov/go-openai`
-  with a configurable `BaseURL`, so DeepSeek is the default but OpenAI drops
-  in via one env var. No hard-coded provider URLs.
-- **Real Guesty Open API shapes, not the simplified brief.** The infra client
-  uses `_id`, `accommodates`, newline-separated `houseRules`,
-  `prices.basePrice`, `address.neighborhood`, the `/availability-pricing/api/calendar/...`
-  endpoint, and the `/communication/conversations/:id/send-message` route.
-  The `endDate` query param is inclusive, so the client translates `to` →
-  `to.Add(-24h)` and folds per-day availability/pricing into a single
-  `domain.Availability` value.
-- **Consumer-side interfaces.** Every external dependency (HTTP clients,
-  stores, clock, debouncer) is declared as a small unexported interface in
-  the consumer package — accept interfaces, return structs. Redis or
-  Postgres stores drop in later without touching the application layer.
-- **Mockoon over in-process fakes.** Guesty is mocked with a real HTTP
-  server (Mockoon) so the infrastructure client exercises its full
-  serialize/HTTP/deserialize path, including status-code handling, auth
-  headers, and timeouts. The LLM side uses an `httptest.Server` with
-  scripted `onChat` callbacks to keep the assertions deterministic.
-- **Mappers at every layer boundary.** Webhook DTOs map to domain in
-  `transport/http/mapper.go`; domain maps to Guesty wire types inside
-  `infrastructure/guesty/types.go`. No struct is shared across layers.
-- **Sonar-style lint gate.** `.golangci.yml` enforces `funlen 100/50`,
-  `cyclop 30`, `gocognit 20`, `nestif 5`, `dupl 150`, and forbids
-  `//nolint` / `#nosec` in non-generated code. Test files are exempt from
-  size/complexity/duplication checks but still lint for correctness.
+```
+cmd/
+  server/          main.go — wires everything, serves HTTP
+  replay/          CLI to re-feed persisted webhooks through the pipeline
+  eval/            classifier regression runner
+internal/
+  transport/http/  handlers, chi router, Svix signature verification, DTOs
+  application/     use cases (processinquiry, classify, generatereply,
+                   decide, eval, dispatch, trackconversion, reviewreply)
+  domain/          entities, codes, sentinel errors; repository/ and mappers/
+  infrastructure/  guesty, llm, debouncer, store{mem,file,mongo,redis},
+                   telemetry, budget, togglesource, eventbus, clock, obs
+fixtures/          Mockoon env + signed-webhook JSON payloads
+tests/integration/ end-to-end tests (build tag: integration)
+docs/runbooks/     kill-switch, budget-watcher procedures
+compose/           observability stack (Alloy, Tempo, Prom, Grafana + dashboards)
+```
 
 ---
 
 ## What I'd build next
 
-- **Persistent idempotency + classification/escalation stores.** Swap
-  `memstore` + JSONL for Postgres (idempotency, escalations) and Redis
-  (debouncer buffer) behind the existing interfaces. No application-layer
-  change required.
-- **Operator UI / Slack notifier.** A tiny web panel or a Slack webhook on
-  every `domain.Escalation` so a human can pick up the turn inside 5
-  minutes. The escalation store already carries everything a reviewer needs.
-- **Log shipping.** Traces and metrics ship to the local Grafana stack
-  today; piping structured logs (Loki / OpenTelemetry logs SDK) so every
-  turn is searchable by `trace_id` is the next step.
-- **Confidence calibration telemetry.** Log the classifier's
-  self-reported confidence alongside the observed auto-reply acceptance /
-  rejection signal so the 0.65 threshold becomes data-driven, not a guess.
-- **Multi-tenant.** Wire `AccountID` through the domain + stores so one
-  instance can handle multiple Cloud9 accounts. Today it's implicit-single.
-- **Replay → re-classify.** `cmd/replay` already walks the JSONL log; add a
-  `--reclassify` mode that re-runs only Stage A with a new prompt so we can
-  diff classifications against a baseline before shipping prompt changes.
+- **Durable idempotency and escalation stores.** `memstore`/JSONL is fine
+  for the demo; production wants Postgres for escalations and Redis for
+  the idempotency set. The interfaces already exist.
+- **Notifier subscribers on the event bus.** A Slack webhook on
+  `escalation.recorded` + `backpressure.dropped`, a PagerDuty page on
+  `budget.exceeded` + `toggle.flipped`. Currently everything logs.
+- **Multi-tenant `AccountID` threading.** One instance serves one Cloud9
+  account today; wire the tenant through domain types, stores, and metric
+  labels.
+- **Confidence calibration data.** Log classifier confidence vs.
+  accept/reject signal so the 0.65 threshold becomes data-driven.
+- **Shadow mode.** Generate replies for turns the operator is reviewing,
+  log them, don't send. Builds on the existing event bus.
 
 ---
 
-## AI usage & verification
+## AI usage, briefly
 
-This slice was built with Claude Code (Anthropic's CLI for Claude) as the
-primary AI collaborator, working in per-task git worktrees via `worktrunk`
-and committing small, atomic changes.
+Built with Claude Code (Anthropic's CLI) via `worktrunk` worktrees, small
+atomic commits.
 
-### Where AI helped
+AI accelerated: scaffolding the four-layer structure, the Stage A schema +
+validator, the Stage B tool dispatcher, the Mockoon fixtures, and the
+integration harness.
 
-- **Scaffolding the four-layer structure.** I described the boundaries
-  (transport / application / domain / infrastructure) and the non-negotiable
-  constraints (Svix signing, consumer-side interfaces, configurable LLM
-  BaseURL) in `CLAUDE.md`; Claude Code generated the initial package
-  layout and constructor wiring.
-- **Prompt + schema authoring for Stage A classifier.** I iterated on the
-  system prompt and JSON schema interactively, then had Claude produce the
-  Go-side schema validator using `gojsonschema`. I reviewed both and
-  rejected a first attempt that accepted free-form `additional` entities
-  with no key pattern — current schema enforces `^[a-z][a-z0-9_]{1,39}$`.
-- **Agent loop for Stage B generator.** The tool dispatcher pattern
-  (`runTool` → typed argument struct → Guesty client call → JSON result
-  fed back as `role: tool`) is a direct adaptation of OpenAI's function
-  calling docs; Claude wrote the dispatcher, I rewrote the reflection-prompt
-  fallback so max-turns never crashes the pipeline.
-- **Mockoon environment JSON + integration test harness.** Deterministic
-  data for listings / availability / conversations / posts / send-message.
-  The integration tests (`tests/integration/*_test.go`) were paired:
-  Claude generated the first draft, I pruned `//nolint` suppressions
-  (forbidden by the convention), fixed the fake LLM type signatures, and
-  added path-based `gosec` exclusions where the subprocess / logfile
-  access is genuinely required.
+I owned: the priority arbiter, the restricted-content rules, the reply
+critic's "sell certainty requires availability check" invariant, the
+decision to short-circuit the kill-switch before classification, every
+rewrite of a `//nolint`-using draft, and the Guesty client's real API
+shapes (Claude's first pass used the simplified brief paths).
 
-### How I verified it
-
-- **Compile + vet + lint gate on every worktree** — `go build ./...`,
-  `go vet ./...`, `golangci-lint run` must all exit clean before a commit.
-- **Race-detector unit tests** — `go test -race -count=1 ./...` on every
-  merge; the debouncer and in-memory stores are concurrency-sensitive and
-  the race detector catches accidental shared state.
-- **End-to-end integration tests** — Mockoon + scripted fake LLM cover the
-  happy path auto-note, burst-debounce collapse, and three escalation
-  reasons. When `mockoon-cli` is absent the tests skip with a clear hint.
-- **Reviewed every AI-written line.** Where I disagreed with the design
-  (`//nolint` sprinkles, accidentally dropping the C.L.O.S.E.R. validator
-  on aborted replies, the first pass at Guesty's calendar endDate semantics)
-  I rewrote the code and left the convention-matching version in.
-
-### Where AI got it wrong
-
-- First-pass Guesty client used the *simplified* API paths from
-  `CHALLENGE.md §5.2` (`/listings/{id}`, `/availability`) — I caught it
-  before the integration test layer and refactored against the real
-  Guesty Open API endpoints.
-- First-pass integration helper leaned on `//nolint:gosec` and
-  `//nolint:revive` to silence linter warnings the project forbids; I
-  replaced the suppressions with a path-scoped exclusion in
-  `.golangci.yml` documented with a comment.
-- Initial reply validator accepted replies whose `CloserBeats.SellCertainty`
-  was `true` but had never called `check_availability` — a subtle
-  hallucination path. Added an explicit `sell_certainty_without_availability`
-  rule in `decide.ValidateReply`.
+Verification before commit: `go build`, `go vet`, `golangci-lint` clean;
+`go test -race` clean; integration suite (when Mockoon present) clean.
