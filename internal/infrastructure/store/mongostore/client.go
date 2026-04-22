@@ -20,6 +20,7 @@ var ErrNotFound = errors.New("record not found")
 type Collections struct {
 	Webhooks           string
 	Classifications    string
+	Replies            string
 	Escalations        string
 	ConversationMemory string
 	Conversions        string
@@ -30,6 +31,7 @@ func DefaultCollections() Collections {
 	return Collections{
 		Webhooks:           "webhooks",
 		Classifications:    "classifications",
+		Replies:            "replies",
 		Escalations:        "escalations",
 		ConversationMemory: "conversation_memory",
 		Conversions:        "conversions",

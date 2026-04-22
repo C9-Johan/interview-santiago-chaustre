@@ -42,6 +42,20 @@ func classificationsValidator() bson.M {
 	}
 }
 
+func repliesValidator() bson.M {
+	return bson.M{
+		"$jsonSchema": bson.M{
+			"bsonType": "object",
+			"required": []string{"post_id", "payload", "updated_at"},
+			"properties": bson.M{
+				"post_id":    bson.M{"bsonType": "string"},
+				"payload":    bson.M{"bsonType": "binData"},
+				"updated_at": bson.M{"bsonType": "date"},
+			},
+		},
+	}
+}
+
 func escalationsValidator() bson.M {
 	return bson.M{
 		"$jsonSchema": bson.M{

@@ -73,6 +73,16 @@ func collectionSpecs(c Collections) []collectionSpec {
 			},
 		},
 		{
+			name:      c.Replies,
+			validator: repliesValidator(),
+			indexes: []mongo.IndexModel{
+				{
+					Keys:    bson.D{{Key: "post_id", Value: 1}},
+					Options: uniqueIndex(),
+				},
+			},
+		},
+		{
 			name:      c.Escalations,
 			validator: escalationsValidator(),
 			indexes: []mongo.IndexModel{

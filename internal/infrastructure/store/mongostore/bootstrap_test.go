@@ -16,6 +16,7 @@ func TestCollectionSpecsCoverAllCollections(t *testing.T) {
 	want := map[string]bool{
 		c.Webhooks:           true,
 		c.Classifications:    true,
+		c.Replies:            true,
 		c.Escalations:        true,
 		c.ConversationMemory: true,
 		c.Conversions:        true,
@@ -53,6 +54,7 @@ func TestValidatorsRequireInvariantFields(t *testing.T) {
 	}{
 		{"webhooks", webhooksValidator(), []string{"post_id", "received_at", "raw_body"}},
 		{"classifications", classificationsValidator(), []string{"post_id", "payload", "updated_at"}},
+		{"replies", repliesValidator(), []string{"post_id", "payload", "updated_at"}},
 		{"escalations", escalationsValidator(), []string{"id", "post_id", "reason", "created_at", "payload"}},
 		{"conversation_memory", conversationMemoryValidator(), []string{"conversation_key", "updated_at", "payload"}},
 		{"conversions", conversionsValidator(), []string{"reservation_id", "managed_at"}},

@@ -74,7 +74,8 @@ func (s StaticToggles) Current() domain.Toggles { return domain.Toggles(s) }
 
 // Deps bundles every collaborator the orchestrator consumes. Construction is
 // the wiring responsibility of cmd/server; UseCase itself does not know how
-// any collaborator is built.
+// any collaborator is built. Replies may be nil — when absent the orchestrator
+// just skips reply persistence (tests and bare deployments run without it).
 type Deps struct {
 	Classifier      *classify.UseCase
 	Generator       *generatereply.UseCase
@@ -83,6 +84,7 @@ type Deps struct {
 	Escalations     repository.EscalationStore
 	Memory          repository.ConversationMemoryStore
 	Classifications repository.ClassificationStore
+	Replies         repository.ReplyStore
 	Conversions     conversionTracker
 	Confidence      confidenceRecorder
 	Critic          replyCritic
@@ -232,11 +234,31 @@ func (u *UseCase) priorContext(ctx context.Context, in Input) domain.PriorContex
 	}
 }
 
-// criticIssues invokes the reply critic (when configured) and returns its
-// issue tags prefixed with "critic:" so the escalation record distinguishes
-// critic-found issues from validator-found ones. A nil critic returns nil.
-// A Pass=true verdict returns nil even if Issues is non-empty — only failed
-// verdicts contribute to the escalation reason.
+// criticBlockerTags is the set of critic issue tags that fail the auto-send
+// gate. Other tags (e.g. missing_beat_*, too_short, generic_intro) are
+// advisory: the generator already self-reports closer_beats and the length
+// validator already runs, and small models report a lot of false positives
+// on those purely stylistic checks. Safety tags (restricted_*, hedging,
+// factual_unsupported) and intent-alignment stay as hard blockers.
+var criticBlockerTags = map[string]struct{}{
+	"factual_unsupported":         {},
+	"hedging":                     {},
+	"restricted_payment":          {},
+	"restricted_address":          {},
+	"restricted_guarantee":        {},
+	"restricted_contact_exchange": {},
+	"intent_mismatch":             {},
+	"off_topic":                   {},
+	"critic_uncertain":            {},
+}
+
+// criticIssues invokes the reply critic (when configured) and returns the
+// subset of its issue tags that are actual auto-send blockers, prefixed with
+// "critic:". A nil critic or a Pass=true verdict returns nil. Advisory-only
+// tags (missing_beat_*, too_short, label_leak, …) are logged but do not
+// contribute to the escalation reason — they're captured in
+// critic_reasoning/critic_confidence so observability can still spot drift
+// without flooding the escalation queue.
 func (u *UseCase) criticIssues(ctx context.Context, in Input, cls domain.Classification, reply domain.Reply) []string {
 	if u.d.Critic == nil {
 		return nil
@@ -251,12 +273,28 @@ func (u *UseCase) criticIssues(ctx context.Context, in Input, cls domain.Classif
 	if verdict.Pass {
 		return nil
 	}
-	tagged := make([]string, 0, len(verdict.Issues)+1)
-	tagged = append(tagged, "critic_rejected")
+	blockers := make([]string, 0, len(verdict.Issues))
+	advisory := make([]string, 0, len(verdict.Issues))
 	for i := range verdict.Issues {
-		tagged = append(tagged, "critic:"+verdict.Issues[i])
+		if _, hard := criticBlockerTags[verdict.Issues[i]]; hard {
+			blockers = append(blockers, "critic:"+verdict.Issues[i])
+			continue
+		}
+		advisory = append(advisory, verdict.Issues[i])
 	}
-	return tagged
+	if len(advisory) > 0 {
+		u.d.Log.InfoContext(ctx, "critic_advisory_only",
+			slog.String("post_id", in.Turn.LastPostID),
+			slog.String("primary_code", string(cls.PrimaryCode)),
+			slog.Any("advisory", advisory),
+			slog.Float64("critic_confidence", verdict.Confidence),
+			slog.String("critic_reasoning", verdict.Reasoning),
+		)
+	}
+	if len(blockers) == 0 {
+		return nil
+	}
+	return append([]string{"critic_rejected"}, blockers...)
 }
 
 func firstMessageBody(t domain.Turn) string {
@@ -398,6 +436,11 @@ func (u *UseCase) generateOrEscalate(ctx context.Context, in Input, cls domain.C
 		})
 		_ = u.d.Idempotency.Complete(ctx, in.Turn.Key, in.Turn.LastPostID)
 		return domain.Reply{}, false
+	}
+	if u.d.Replies != nil {
+		if err := u.d.Replies.Put(ctx, in.Turn.LastPostID, reply); err != nil {
+			u.logErr(ctx, "reply_persist_failed", err)
+		}
 	}
 	return reply, true
 }

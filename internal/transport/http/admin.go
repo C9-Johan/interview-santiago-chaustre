@@ -8,6 +8,8 @@ import (
 	nethttp "net/http"
 	"strings"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/chaustre/inquiryiq/internal/domain"
 	"github.com/chaustre/inquiryiq/internal/infrastructure/budget"
 )
@@ -32,6 +34,27 @@ type AdminConversionsSource interface {
 	List(ctx context.Context, limit int) ([]domain.ManagedReservation, error)
 }
 
+// AdminClassificationsSource is the consumer-side contract for the
+// /admin/classifications/{post_id} endpoint. Satisfied structurally by
+// any repository.ClassificationStore (filestore or mongostore).
+type AdminClassificationsSource interface {
+	Get(ctx context.Context, postID string) (domain.Classification, error)
+}
+
+// AdminRepliesSource is the consumer-side contract for reading the stored
+// generator reply (body + tool calls + CLOSER beats) per post_id.
+// Satisfied structurally by repository.ReplyStore implementations.
+type AdminRepliesSource interface {
+	Get(ctx context.Context, postID string) (domain.Reply, error)
+}
+
+// AdminEscalationsSource is the consumer-side contract for joining a
+// post_id with any escalation recorded against it. Satisfied by the
+// existing repository.EscalationStore via List() + filter in-handler.
+type AdminEscalationsSource interface {
+	List(ctx context.Context, limit int) ([]domain.Escalation, error)
+}
+
 // AdminHandler exposes operator-controlled runtime state — the auto-response
 // kill-switch plus a read-only view of the LLM budget. Guarded by a shared
 // bearer token against the Authorization header; an empty configured Token
@@ -39,11 +62,14 @@ type AdminConversionsSource interface {
 // accepts anonymous flips. Budget/Conversions are optional — when nil, their
 // routes return 503 so the endpoints do not lie.
 type AdminHandler struct {
-	Source      AdminTogglesSource
-	Budget      AdminBudgetSource
-	Conversions AdminConversionsSource
-	Token       string
-	Log         *slog.Logger
+	Source          AdminTogglesSource
+	Budget          AdminBudgetSource
+	Conversions     AdminConversionsSource
+	Classifications AdminClassificationsSource
+	Replies         AdminRepliesSource
+	Escalations     AdminEscalationsSource
+	Token           string
+	Log             *slog.Logger
 }
 
 // GetAutoResponse returns the current AutoResponseEnabled flag as JSON.
@@ -140,6 +166,72 @@ func (h *AdminHandler) GetConversions(w nethttp.ResponseWriter, r *nethttp.Reque
 		"rate":      rate,
 		"items":     items,
 	})
+}
+
+// GetTurnByPostID returns everything the service captured for one guest turn
+// keyed by its post_id: the classifier verdict (primary code, entities,
+// reasoning, confidence, risk) and any escalation that was recorded against
+// the same post_id. Designed for the tester UI so a developer can see why
+// the bot decided what it did without tailing logs.
+func (h *AdminHandler) GetTurnByPostID(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if !h.authorized(w, r) {
+		return
+	}
+	postID := chi.URLParam(r, "post_id")
+	if postID == "" {
+		writeJSON(w, nethttp.StatusBadRequest, map[string]string{"error": "post_id required"})
+		return
+	}
+	out := map[string]any{"post_id": postID}
+	if h.Classifications != nil {
+		cls, err := h.Classifications.Get(r.Context(), postID)
+		switch {
+		case err == nil:
+			out["classification"] = cls
+		case strings.Contains(err.Error(), "not found"):
+			// Turn still in flight or before classification — report absence,
+			// not an error. The UI polls and will see it on the next tick.
+			out["classification"] = nil
+		default:
+			h.Log.WarnContext(r.Context(), "admin_classification_lookup_failed",
+				slog.String("post_id", postID), slog.String("err", err.Error()))
+			out["classification_error"] = err.Error()
+		}
+	}
+	if h.Replies != nil {
+		rep, err := h.Replies.Get(r.Context(), postID)
+		switch {
+		case err == nil:
+			out["reply"] = rep
+		case strings.Contains(err.Error(), "not found"):
+			out["reply"] = nil
+		default:
+			h.Log.WarnContext(r.Context(), "admin_reply_lookup_failed",
+				slog.String("post_id", postID), slog.String("err", err.Error()))
+			out["reply_error"] = err.Error()
+		}
+	}
+	if h.Escalations != nil {
+		out["escalation"] = findEscalationByPostID(r.Context(), h.Escalations, postID)
+	}
+	writeJSON(w, nethttp.StatusOK, out)
+}
+
+// findEscalationByPostID walks the recent escalation list (capped at 500 to
+// keep the operator-facing response bounded) and returns the first match.
+// Returns nil when no escalation was recorded for this post — which means
+// the turn auto-sent, not that the lookup failed.
+func findEscalationByPostID(ctx context.Context, es AdminEscalationsSource, postID string) *domain.Escalation {
+	items, err := es.List(ctx, 500)
+	if err != nil {
+		return nil
+	}
+	for i := range items {
+		if items[i].PostID == postID {
+			return &items[i]
+		}
+	}
+	return nil
 }
 
 // authorized enforces bearer-token auth. Constant-time comparison avoids

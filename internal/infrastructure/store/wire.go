@@ -23,6 +23,7 @@ import (
 type Bundle struct {
 	Webhooks        repository.WebhookStore
 	Classifications repository.ClassificationStore
+	Replies         repository.ReplyStore
 	Escalations     repository.EscalationStore
 	Idempotency     repository.IdempotencyStore
 	Memory          repository.ConversationMemoryStore
@@ -95,6 +96,11 @@ func (b *Bundle) buildFile(cfg *config.Config) error {
 		return fmt.Errorf("classifications store: %w", err)
 	}
 	b.add("classifications_file", func(_ context.Context) error { return classifications.Close() })
+	replies, err := filestore.NewReplies(cfg.DataDir)
+	if err != nil {
+		return fmt.Errorf("replies store: %w", err)
+	}
+	b.add("replies_file", func(_ context.Context) error { return replies.Close() })
 	escFile, err := filestore.NewEscalations(cfg.DataDir)
 	if err != nil {
 		return fmt.Errorf("escalations store: %w", err)
@@ -112,6 +118,7 @@ func (b *Bundle) buildFile(cfg *config.Config) error {
 	b.add("conversions_file", func(_ context.Context) error { return conversions.Close() })
 	b.Webhooks = webhooks
 	b.Classifications = classifications
+	b.Replies = replies
 	b.Escalations = memstore.NewEscalationRing(500, escFile)
 	b.Memory = memory
 	b.Conversions = conversions
@@ -135,6 +142,10 @@ func (b *Bundle) buildMongo(ctx context.Context, cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
+	replies, err := mongostore.NewReplies(ctx, client)
+	if err != nil {
+		return err
+	}
 	escalations, err := mongostore.NewEscalations(ctx, client)
 	if err != nil {
 		return err
@@ -149,6 +160,7 @@ func (b *Bundle) buildMongo(ctx context.Context, cfg *config.Config) error {
 	}
 	b.Webhooks = webhooks
 	b.Classifications = classifications
+	b.Replies = replies
 	b.Escalations = escalations
 	b.Memory = memory
 	b.Conversions = conversions

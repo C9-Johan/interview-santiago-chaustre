@@ -160,6 +160,7 @@ func buildApp(ctx context.Context, cfg *config.Config, log *slog.Logger, tel *te
 		Escalations:     stores.Escalations,
 		Memory:          stores.Memory,
 		Classifications: stores.Classifications,
+		Replies:         stores.Replies,
 		Conversions:     tracker,
 		Confidence:      telemetry.NewConfidenceRecorder(tel.Histograms()),
 		Critic:          useCases.critic,
@@ -200,11 +201,14 @@ func buildApp(ctx context.Context, cfg *config.Config, log *slog.Logger, tel *te
 		Now:          func() time.Time { return time.Now().UTC() },
 	}
 	adminHandler := &transporthttp.AdminHandler{
-		Source:      toggles,
-		Budget:      watcher,
-		Conversions: stores.Conversions,
-		Token:       cfg.AdminToken,
-		Log:         log,
+		Source:          toggles,
+		Budget:          watcher,
+		Conversions:     stores.Conversions,
+		Classifications: stores.Classifications,
+		Replies:         stores.Replies,
+		Escalations:     stores.Escalations,
+		Token:           cfg.AdminToken,
+		Log:             log,
 	}
 
 	return &appBundle{

@@ -37,6 +37,15 @@ type ClassificationStore interface {
 	Get(ctx context.Context, postID string) (domain.Classification, error)
 }
 
+// ReplyStore persists the generator's final reply (including tool calls and
+// CLOSER beats) per postID. Used by the tester admin endpoint to surface the
+// bot's reasoning for auto-sent turns — escalated turns already carry the
+// reply inside the escalation record.
+type ReplyStore interface {
+	Put(ctx context.Context, postID string, r domain.Reply) error
+	Get(ctx context.Context, postID string) (domain.Reply, error)
+}
+
 // EscalationStore persists every escalation for operator review.
 type EscalationStore interface {
 	Record(ctx context.Context, e domain.Escalation) error
