@@ -14,6 +14,7 @@ import (
 	"github.com/chaustre/inquiryiq/internal/application/decide"
 	"github.com/chaustre/inquiryiq/internal/application/generatereply"
 	"github.com/chaustre/inquiryiq/internal/application/promptsafety"
+	"github.com/chaustre/inquiryiq/internal/application/qualifyreply"
 	"github.com/chaustre/inquiryiq/internal/application/reviewreply"
 	"github.com/chaustre/inquiryiq/internal/application/trackconversion"
 	"github.com/chaustre/inquiryiq/internal/domain"
@@ -49,6 +50,14 @@ type replyCritic interface {
 	Review(ctx context.Context, in reviewreply.Input) reviewreply.Verdict
 }
 
+// qualifierUC is the narrow interface the orchestrator uses to produce X1
+// auto-reply qualifiers. When nil, the orchestrator falls back to the
+// spec-faithful "X1 always escalates" behaviour. Satisfied by
+// *qualifyreply.UseCase.
+type qualifierUC interface {
+	Generate(ctx context.Context, in qualifyreply.Input) (domain.Reply, error)
+}
+
 // togglesProvider is the runtime source of the auto-send toggles. The
 // orchestrator reads Current() on every turn so an operator kill-switch flip
 // takes effect immediately. Satisfied by *togglesource.Source in production
@@ -79,6 +88,7 @@ func (s StaticToggles) Current() domain.Toggles { return domain.Toggles(s) }
 type Deps struct {
 	Classifier      *classify.UseCase
 	Generator       *generatereply.UseCase
+	Qualifier       qualifierUC
 	Guesty          repository.GuestyClient
 	Idempotency     repository.IdempotencyStore
 	Escalations     repository.EscalationStore
@@ -145,6 +155,10 @@ func (u *UseCase) Run(ctx context.Context, in Input) {
 		attribute.String("classification.primary_code", string(cls.PrimaryCode)),
 		attribute.Float64("classification.confidence", cls.Confidence),
 	)
+	if cls.PrimaryCode == domain.X1 && u.d.Qualifier != nil {
+		u.qualifyAndSend(ctx, in, cls, prior)
+		return
+	}
 	gate1 := decide.PreGenerate(cls, u.d.Toggles.Current(), u.d.Thresholds.ClassifierMin)
 	if !gate1.AutoSend {
 		span.SetAttributes(attribute.String("decision.pre_generate", gate1.Reason))
@@ -158,6 +172,74 @@ func (u *UseCase) Run(ctx context.Context, in Input) {
 	}
 	u.recordGeneratorConfidence(ctx, cls, reply)
 	u.gateAndSend(ctx, in, cls, reply)
+}
+
+// qualifyAndSend is the X1 (GRAY) auto-reply path. It runs the qualifier
+// LLM call, applies the qualifier-specific Gate 2, and either posts an
+// internal note with a 1–2 question qualifier OR escalates when the auto-
+// send rules aren't met. The critic is intentionally skipped: the critic
+// rubric bakes in CLOSER assumptions that the qualifier path does not
+// follow, and a short qualifier has no sell-certainty or factual claims to
+// audit. Restricted-content + hedging + length + confidence are still
+// enforced via decide.DecideQualifier, so the safety invariants hold.
+func (u *UseCase) qualifyAndSend(ctx context.Context, in Input, cls domain.Classification, prior domain.PriorContext) {
+	ctx, span := tracer().Start(ctx, "processinquiry.Qualify",
+		trace.WithAttributes(attribute.String("classification.primary_code", string(cls.PrimaryCode))))
+	defer span.End()
+
+	// Respect the operator kill-switch just like every other auto-send path.
+	if !u.d.Toggles.Current().AutoResponseEnabled {
+		u.recordEscalation(ctx, in, cls, nil, domain.Decision{Reason: "auto_disabled"})
+		u.closeTurn(ctx, in, cls, nil)
+		return
+	}
+
+	reply, err := u.d.Qualifier.Generate(ctx, qualifyreply.Input{
+		Turn:           in.Turn,
+		Classification: cls,
+		Prior:          prior,
+		GuestName:      in.Conversation.GuestName,
+		ConversationID: in.Conversation.RawID,
+		ListingID:      in.ListingID,
+		Now:            in.Now,
+	})
+	if err != nil {
+		u.logErr(ctx, "qualifier_failed", err)
+		u.recordEscalation(ctx, in, cls, nil, domain.Decision{
+			Reason: "qualifier_failed",
+			Detail: []string{err.Error()},
+		})
+		_ = u.d.Idempotency.Complete(ctx, in.Turn.Key, in.Turn.LastPostID)
+		return
+	}
+	if u.d.Replies != nil {
+		if err := u.d.Replies.Put(ctx, in.Turn.LastPostID, reply); err != nil {
+			u.logErr(ctx, "reply_persist_failed", err)
+		}
+	}
+	u.recordGeneratorConfidence(ctx, cls, reply)
+
+	final := decide.DecideQualifier(reply, u.d.Toggles.Current(), u.d.Thresholds.GeneratorMin)
+	span.SetAttributes(
+		attribute.Bool("decision.auto_send", final.AutoSend),
+		attribute.String("decision.reason", final.Reason),
+	)
+	if !final.AutoSend {
+		u.recordEscalation(ctx, in, cls, &reply, final)
+		u.closeTurn(ctx, in, cls, &reply)
+		return
+	}
+	if err := u.d.Guesty.PostNote(ctx, in.Conversation.RawID, reply.Body); err != nil {
+		u.logErr(ctx, "post_note_failed", err)
+		u.recordEscalation(ctx, in, cls, &reply, domain.Decision{
+			Reason: "post_note_failed",
+			Detail: []string{err.Error()},
+		})
+		u.closeTurn(ctx, in, cls, &reply)
+		return
+	}
+	u.markManaged(ctx, in, cls)
+	u.closeTurn(ctx, in, cls, &reply)
 }
 
 func (u *UseCase) gateAndSend(ctx context.Context, in Input, cls domain.Classification, reply domain.Reply) {

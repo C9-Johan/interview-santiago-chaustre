@@ -106,6 +106,15 @@ type Config struct {
 	// "unauthenticated admin" mode by design, because the auto-response
 	// kill-switch is incident-critical and cannot be flipped anonymously.
 	AdminToken string
+
+	// X1AutoReplyEnabled turns on the GRAY/X1 qualifier auto-reply path.
+	// When true the orchestrator handles vague greetings ("Hi", emoji-only,
+	// "interested") by asking 1–2 targeted qualifying questions instead of
+	// escalating to a human. Designed as a conversion-rate lever — a
+	// 10-second auto-qualifier keeps the guest engaged while a human would
+	// still be in the triage queue. Defaults to true in dev for demos; set
+	// to false to restore the spec-faithful "X1 always escalates" path.
+	X1AutoReplyEnabled bool
 }
 
 // ErrMissingRequired is returned by Load when a required env var is unset.
@@ -177,6 +186,8 @@ func Load() (Config, error) {
 		LLMPriceCompletionPer1K: getFloat("LLM_PRICE_COMPLETION_PER_1K", 0.00028),
 
 		AdminToken: os.Getenv("ADMIN_TOKEN"),
+
+		X1AutoReplyEnabled: getBool("X1_AUTOREPLY_ENABLED", true),
 	}
 	if c.GuestyWebhookSecret == "" {
 		return c, fmt.Errorf("%w: GUESTY_WEBHOOK_SECRET", ErrMissingRequired)

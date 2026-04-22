@@ -22,6 +22,7 @@ import (
 	"github.com/chaustre/inquiryiq/internal/application/decide"
 	"github.com/chaustre/inquiryiq/internal/application/dispatch"
 	"github.com/chaustre/inquiryiq/internal/application/generatereply"
+	"github.com/chaustre/inquiryiq/internal/application/qualifyreply"
 	"github.com/chaustre/inquiryiq/internal/application/processinquiry"
 	"github.com/chaustre/inquiryiq/internal/application/reviewreply"
 	"github.com/chaustre/inquiryiq/internal/application/trackconversion"
@@ -152,7 +153,11 @@ func buildApp(ctx context.Context, cfg *config.Config, log *slog.Logger, tel *te
 
 	tracker := trackconversion.New(stores.Conversions, telemetry.NewConversionRecorder(tel.Counters()), log)
 
-	orch := processinquiry.New(processinquiry.Deps{
+	// Assign the qualifier via a concrete nil check so the orchestrator's
+	// `Qualifier != nil` guard sees a true nil interface when the feature
+	// flag is off — assigning a typed-nil *qualifyreply.UseCase directly
+	// would fail that check and panic on first X1 turn.
+	deps := processinquiry.Deps{
 		Classifier:      useCases.classifier,
 		Generator:       useCases.generator,
 		Guesty:          gclient,
@@ -168,7 +173,11 @@ func buildApp(ctx context.Context, cfg *config.Config, log *slog.Logger, tel *te
 		Events:          bus,
 		Thresholds:      decide.Thresholds{ClassifierMin: cfg.ClassifierMinConf, GeneratorMin: cfg.GeneratorMinConf},
 		Log:             log,
-	})
+	}
+	if useCases.qualifier != nil {
+		deps.Qualifier = useCases.qualifier
+	}
+	orch := processinquiry.New(deps)
 
 	pool := dispatch.New(dispatch.Config{
 		Workers:      cfg.DispatchWorkers,
@@ -278,13 +287,15 @@ func shutdown(srv *nethttp.Server, app *appBundle, log *slog.Logger) error {
 	return nil
 }
 
-// useCaseBundle groups the three LLM-backed use cases so buildApp passes
-// them by value instead of threading three positional returns through a
-// separate helper.
+// useCaseBundle groups the LLM-backed use cases so buildApp passes them by
+// value instead of threading positional returns through a separate helper.
+// qualifier is nil when X1_AUTOREPLY_ENABLED is false — the orchestrator
+// then falls back to the spec-faithful escalate-on-X1 path.
 type useCaseBundle struct {
 	classifier *classify.UseCase
 	generator  *generatereply.UseCase
 	critic     *reviewreply.UseCase
+	qualifier  *qualifyreply.UseCase
 }
 
 // buildBudgetWatcher assembles the cost accountant that rides in front of
@@ -324,7 +335,11 @@ func buildUseCases(llmClient *llm.Client, gclient repository.GuestyClient, cfg *
 	if err != nil {
 		return useCaseBundle{}, fmt.Errorf("reviewreply.New: %w", err)
 	}
-	return useCaseBundle{classifier: classifier, generator: generator, critic: critic}, nil
+	var qualifier *qualifyreply.UseCase
+	if cfg.X1AutoReplyEnabled {
+		qualifier = qualifyreply.New(llmClient, cfg.ModelGenerator, cfg.GeneratorTimeout)
+	}
+	return useCaseBundle{classifier: classifier, generator: generator, critic: critic, qualifier: qualifier}, nil
 }
 
 // enqueueFlushFn is the debouncer-facing flush callback. Instead of running
