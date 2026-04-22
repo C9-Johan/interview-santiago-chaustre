@@ -15,7 +15,7 @@
 
 services:
   mockoon:
-    image: docker.io/mockoon/cli:10.1.0
+    image: docker.io/mockoon/cli:latest
     command:
       - --data
       - /data/guesty.json
