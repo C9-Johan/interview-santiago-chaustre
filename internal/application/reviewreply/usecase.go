@@ -98,9 +98,9 @@ func (u *UseCase) Review(ctx context.Context, in Input) Verdict {
 		return failClosed("critic_empty_response", nil)
 	}
 	raw := strings.TrimSpace(resp.Choices[0].Message.Content)
-	verdict, ok := u.validateAndParse(raw)
+	verdict, reason, ok := u.validateAndParse(raw)
 	if !ok {
-		return failClosed("critic_schema_invalid", nil)
+		return failClosedWithRaw("critic_schema_invalid", reason, raw)
 	}
 	return verdict
 }
@@ -117,19 +117,28 @@ func (u *UseCase) request(messages []openai.ChatCompletionMessage) openai.ChatCo
 	}
 }
 
-func (u *UseCase) validateAndParse(raw string) (Verdict, bool) {
+// validateAndParse returns the parsed verdict, a human-readable reason
+// when ok is false (e.g. "schema: reasoning is required"), and the ok flag.
+func (u *UseCase) validateAndParse(raw string) (Verdict, string, bool) {
 	if raw == "" {
-		return Verdict{}, false
+		return Verdict{}, "empty content", false
 	}
 	result, err := u.schema.Validate(gojsonschema.NewStringLoader(raw))
-	if err != nil || !result.Valid() {
-		return Verdict{}, false
+	if err != nil {
+		return Verdict{}, "invalid JSON: " + err.Error(), false
+	}
+	if !result.Valid() {
+		errs := result.Errors()
+		if len(errs) > 0 {
+			return Verdict{}, "schema: " + errs[0].String(), false
+		}
+		return Verdict{}, "schema: unknown violation", false
 	}
 	var wire verdictWire
 	if err := json.Unmarshal([]byte(raw), &wire); err != nil {
-		return Verdict{}, false
+		return Verdict{}, "unmarshal: " + err.Error(), false
 	}
-	return Verdict(wire), true
+	return Verdict(wire), "", true
 }
 
 // failClosed builds the verdict returned when the critic itself misbehaves.
@@ -146,4 +155,25 @@ func failClosed(tag string, err error) Verdict {
 		Confidence: 0,
 		Reasoning:  "critic unavailable — failing closed to escalation",
 	}
+}
+
+// failClosedWithRaw is failClosed that also carries the schema-violation
+// reason and a truncated raw body in a diagnostic issue tag, so the
+// escalation record and service log pinpoint what the model produced.
+func failClosedWithRaw(tag, reason, raw string) Verdict {
+	v := failClosed(tag, nil)
+	if reason != "" {
+		v.Issues = append(v.Issues, "diag:"+reason)
+	}
+	if raw != "" {
+		v.Issues = append(v.Issues, "raw:"+truncate(raw, 300))
+	}
+	return v
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }

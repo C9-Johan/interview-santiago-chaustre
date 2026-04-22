@@ -129,6 +129,7 @@ type server struct {
 	cfg        config
 	log        *slog.Logger
 	logs       *conversationLog
+	toolCalls  *toolCallLog
 	mockoonRev *httputil.ReverseProxy
 }
 
@@ -141,8 +142,63 @@ func newServer(cfg config, log *slog.Logger) *server {
 		cfg:        cfg,
 		log:        log,
 		logs:       &conversationLog{items: map[string][]logEntry{}},
+		toolCalls:  &toolCallLog{items: []toolCall{}},
 		mockoonRev: httputil.NewSingleHostReverseProxy(target),
 	}
+}
+
+// toolCall records one Guesty-shaped request the service sent through the
+// proxy — i.e. one tool invocation from the Stage B agent loop. The smoke
+// script asserts that rich questions trigger BOTH get_listing (→ /listings/)
+// and check_availability (→ /availability-pricing/) so the agent is
+// genuinely using multiple tools, not just parroting.
+type toolCall struct {
+	Method string    `json:"method"`
+	Path   string    `json:"path"`
+	Tool   string    `json:"tool"` // friendly name inferred from path
+	At     time.Time `json:"at"`
+}
+
+type toolCallLog struct {
+	mu    sync.RWMutex
+	items []toolCall
+}
+
+func (l *toolCallLog) append(c toolCall) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.items = append(l.items, c)
+}
+
+func (l *toolCallLog) list() []toolCall {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	out := make([]toolCall, len(l.items))
+	copy(out, l.items)
+	return out
+}
+
+func (l *toolCallLog) reset() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.items = l.items[:0]
+}
+
+// toolName maps the Guesty path prefix to the tool the agent actually
+// called. Unknown prefixes return the raw path so nothing is silently
+// dropped.
+func toolName(p string) string {
+	switch {
+	case strings.HasPrefix(p, "/listings/"):
+		return "get_listing"
+	case strings.HasPrefix(p, "/availability-pricing/"):
+		return "check_availability"
+	case strings.HasPrefix(p, "/communication/conversations/") && strings.HasSuffix(p, "/posts"):
+		return "get_conversation_history"
+	case strings.HasPrefix(p, "/communication/conversations/"):
+		return "get_conversation"
+	}
+	return p
 }
 
 func (s *server) routes() http.Handler {
@@ -151,6 +207,8 @@ func (s *server) routes() http.Handler {
 	api.HandleFunc("GET /api/escalations", s.handleEscalations)
 	api.HandleFunc("GET /api/conversations/{id}", s.handleConversation)
 	api.HandleFunc("GET /api/health", s.handleHealth)
+	api.HandleFunc("GET /api/tool-calls", s.handleToolCalls)
+	api.HandleFunc("POST /api/tool-calls/reset", s.handleToolCallsReset)
 	api.HandleFunc("POST /communication/conversations/{id}/send-message", s.handleSendMessage)
 
 	static := http.FileServer(http.Dir(s.cfg.staticDir))
@@ -168,6 +226,14 @@ func (s *server) routes() http.Handler {
 		case isInterceptedSend(r):
 			api.ServeHTTP(w, r)
 		case isGuestyPath(r.URL.Path):
+			// Record every proxied Guesty request as a tool call before
+			// forwarding — keeps the mockoon round-trip behavior intact.
+			s.toolCalls.append(toolCall{
+				Method: r.Method,
+				Path:   r.URL.Path,
+				Tool:   toolName(r.URL.Path),
+				At:     time.Now().UTC(),
+			})
 			s.mockoonRev.ServeHTTP(w, r)
 		default:
 			static.ServeHTTP(w, r)
@@ -402,6 +468,30 @@ func (s *server) handleConversation(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleHealth(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"ok": "true"})
+}
+
+// handleToolCalls returns every Guesty-shaped request the service has
+// proxied since tester startup (or the last reset). The smoke script uses
+// this to assert the Stage B agent called multiple distinct tools.
+func (s *server) handleToolCalls(w http.ResponseWriter, _ *http.Request) {
+	calls := s.toolCalls.list()
+	tools := map[string]int{}
+	for _, c := range calls {
+		tools[c.Tool]++
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"calls":    calls,
+		"by_tool":  tools,
+		"total":    len(calls),
+		"distinct": len(tools),
+	})
+}
+
+// handleToolCallsReset clears the tool-call log so the smoke can assert on
+// calls made in a single scenario rather than everything since boot.
+func (s *server) handleToolCallsReset(w http.ResponseWriter, _ *http.Request) {
+	s.toolCalls.reset()
 	writeJSON(w, http.StatusOK, map[string]string{"ok": "true"})
 }
 

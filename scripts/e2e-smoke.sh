@@ -74,12 +74,44 @@ timestamp=$(date +%s)
 HAPPY_CONV="conv_smoke_happy_${timestamp}"
 ESC_CONV="conv_smoke_esc_${timestamp}"
 
-echo "== sending happy message =="
-send "$HAPPY_CONV" "Hi! Is the Soho 2BR available Fri April 24 – Sun April 26 for 4 adults?"
+# Clear the tester's tool-call log so we assert only on calls made during
+# this run. Fire-and-forget — the tester always returns 200.
+curl -sf -X POST "$TESTER_URL/api/tool-calls/reset" >/dev/null || true
+
+echo "== sending happy message (asks about availability AND price — forces multi-tool) =="
+# A rich question that names the listing, specific dates, guest count, and
+# asks for the total price. A correct agent loop calls at least:
+#   • get_listing          (resolve the Soho 2BR by name/id)
+#   • check_availability   (for the dates + guest count)
+# Optionally also get_conversation_history. The post-turn assertion below
+# only checks distinct tool count >= 2, so one extra tool is fine.
+send "$HAPPY_CONV" "Hi! Is the Soho 2BR (listing L1) available Fri April 24 – Sun April 26 for 4 adults? What's the total?"
 happy_outcome=$(wait_for_outcome "$HAPPY_CONV")
 echo "happy outcome: $happy_outcome"
 
-echo "== sending escalation-trigger message =="
+echo "== asserting Stage B agent used multiple tools =="
+tool_json=$(curl -sf "$TESTER_URL/api/tool-calls" || echo '{}')
+distinct=$(echo "$tool_json" | jq -r '.distinct // 0')
+total=$(echo "$tool_json"    | jq -r '.total // 0')
+tools=$(echo "$tool_json"    | jq -r '.by_tool // {} | to_entries | map("\(.key)=\(.value)") | join(", ")')
+echo "tool calls: total=$total distinct=$distinct  ($tools)"
+
+if [[ "$distinct" -lt 2 ]]; then
+    echo "✗ expected the agent to call at least 2 distinct tools, got distinct=$distinct" >&2
+    echo "  tools seen: $tools" >&2
+    exit 1
+fi
+
+has_listing=$(echo "$tool_json" | jq -r '(.by_tool.get_listing // 0) > 0')
+has_avail=$(echo   "$tool_json" | jq -r '(.by_tool.check_availability // 0) > 0')
+if [[ "$has_listing" != "true" || "$has_avail" != "true" ]]; then
+    echo "✗ expected get_listing AND check_availability to both fire" >&2
+    echo "  get_listing hit=$has_listing, check_availability hit=$has_avail" >&2
+    exit 1
+fi
+echo "✓ agent invoked get_listing and check_availability"
+
+echo "== sending escalation-trigger message (discount + off-platform) =="
 send "$ESC_CONV" "Any discount if I book right now? Cash, off-platform."
 esc_outcome=$(wait_for_outcome "$ESC_CONV")
 echo "escalation outcome: $esc_outcome"
