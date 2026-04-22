@@ -62,9 +62,28 @@ local_resource(
 # --- Stack lifecycle -----------------------------------------------------
 # compose-up runs on `tilt up`. Auto-runs after env-check passes.
 # compose-down is manual (click to tear down without exiting Tilt).
+# Stack links — shown as clickable buttons next to every resource. In dev
+# mode only the dev-stack URLs are reachable; prod mode also boots the full
+# observability chain so the Grafana/Tempo/Prom/Mongo/Redis links resolve.
+dev_links = [
+    link('http://localhost:4000',  'Tester UI'),
+    link('http://localhost:8080/healthz', 'Service /healthz'),
+    link('http://localhost:3001',  'Mockoon (fake Guesty)'),
+]
+prod_links = dev_links + [
+    link('http://localhost:3000',  'Grafana'),
+    link('http://localhost:9090',  'Prometheus'),
+    link('http://localhost:3200',  'Tempo'),
+    link('http://localhost:12345', 'Alloy UI'),
+    link('http://localhost:8081',  'Mongo Express'),
+    link('http://localhost:5540',  'RedisInsight'),
+]
+stack_links = prod_links if mode == 'prod' else dev_links
+
 local_resource(
     'compose-up',
     cmd=with_env(compose_cmd('up -d --build')),
+    links=stack_links,
     labels=['stack'],
     resource_deps=['env-check'],
     auto_init=True,
@@ -92,10 +111,11 @@ local_resource(
 # --- Per-service log tails ----------------------------------------------
 # Each `compose logs -f <service>` surfaces the container's stdout in
 # Tilt's UI pane. ▶ restarts the tail if the container restarts under you.
-def compose_logs(service, label):
+def compose_logs(service, label, svc_links=[]):
     local_resource(
         service,
         serve_cmd=with_env(compose_cmd('logs -f ' + service)),
+        links=svc_links,
         labels=[label],
         resource_deps=['compose-up'],
         readiness_probe=probe(
@@ -104,9 +124,19 @@ def compose_logs(service, label):
         ),
     )
 
-compose_logs('mockoon',   'mocks')
-compose_logs('inquiryiq', 'service')
-compose_logs('tester',    'ui')
+compose_logs('mockoon',   'mocks',   [link('http://localhost:3001', 'Mockoon API')])
+compose_logs('inquiryiq', 'service', [link('http://localhost:8080/healthz', '/healthz')])
+compose_logs('tester',    'ui',      [link('http://localhost:4000', 'Tester UI')])
+
+# Observability log tails — only rendered in prod mode where these
+# containers actually exist. Clicking the resource name opens their UI.
+if mode == 'prod':
+    compose_logs('grafana',       'observability', [link('http://localhost:3000',  'Grafana')])
+    compose_logs('prometheus',    'observability', [link('http://localhost:9090',  'Prometheus')])
+    compose_logs('tempo',         'observability', [link('http://localhost:3200',  'Tempo')])
+    compose_logs('alloy',         'observability', [link('http://localhost:12345', 'Alloy UI')])
+    compose_logs('mongo-express', 'stores',        [link('http://localhost:8081',  'Mongo Express')])
+    compose_logs('redisinsight',  'stores',        [link('http://localhost:5540',  'RedisInsight')])
 
 # --- Tests, lint, eval --------------------------------------------------
 # Manual buttons so you control when they run — CI runs them on every

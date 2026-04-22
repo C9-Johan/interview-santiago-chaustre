@@ -4,20 +4,36 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>InquiryIQ — Tester</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" />
   <link rel="stylesheet" href="/app.css" />
 </head>
 <body>
-  <header>
+  <header class="app-header">
     <div class="brand">
-      <span class="dot"></span>
-      <h1>InquiryIQ tester</h1>
-      <span class="sub">play a guest, watch the bot reply or escalate</span>
+      <span class="logo" aria-hidden="true"></span>
+      <div class="brand-text">
+        <h1>InquiryIQ</h1>
+        <span class="sub">guest inquiry → classify → reply or escalate</span>
+      </div>
     </div>
+    <nav class="tabs" role="tablist">
+      <button class="tab active" role="tab" data-tab="customer" aria-selected="true">
+        <span class="tab-icon" aria-hidden="true">💬</span>
+        <span>Customer</span>
+      </button>
+      <button class="tab" role="tab" data-tab="agent" aria-selected="false">
+        <span class="tab-icon" aria-hidden="true">🎧</span>
+        <span>Agent</span>
+        <span id="agent-badge" class="badge hidden">0</span>
+      </button>
+    </nav>
     <div class="toolbar">
-      <label>Guest: <input id="guest-name" value="Tester" /></label>
-      <label>Conversation: <input id="conv-id" value="conv_ui_001" /></label>
-      <label>Reservation: <input id="res-id" value="res_ui_001" /></label>
-      <label>Platform:
+      <label>Guest <input id="guest-name" value="Tester" /></label>
+      <label>Conversation <input id="conv-id" value="conv_ui_001" /></label>
+      <label>Reservation <input id="res-id" value="res_ui_001" /></label>
+      <label>Platform
         <select id="platform">
           <option value="airbnb2">airbnb2</option>
           <option value="bookingCom">bookingCom</option>
@@ -28,7 +44,10 @@
     </div>
   </header>
 
-  <main id="app"></main>
+  <main>
+    <section id="view-customer" class="view active" role="tabpanel"></section>
+    <section id="view-agent" class="view" role="tabpanel" hidden></section>
+  </main>
 
   <script type="module" src="/app.js"></script>
 </body>

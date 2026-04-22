@@ -7,7 +7,31 @@ import (
 	"github.com/chaustre/inquiryiq/internal/infrastructure/config"
 )
 
+// clearConfigEnv wipes every config-reading env var for the duration of a
+// test so the test exercises the library's true defaults rather than what
+// the caller's shell/mise/direnv happens to inject. Keep this in sync with
+// the vars Load() reads.
+func clearConfigEnv(t *testing.T) {
+	t.Helper()
+	for _, k := range []string{
+		"PORT", "LOG_LEVEL", "AUTO_RESPONSE_ENABLED",
+		"SVIX_MAX_CLOCK_DRIFT_SECONDS",
+		"DEBOUNCE_WINDOW_MS", "DEBOUNCE_MAX_WAIT_MS",
+		"GUESTY_BASE_URL", "GUESTY_TOKEN", "GUESTY_TIMEOUT_MS", "GUESTY_RETRIES",
+		"LLM_BASE_URL", "LLM_MODEL_CLASSIFIER", "LLM_MODEL_GENERATOR",
+		"LLM_CLASSIFIER_TIMEOUT_MS", "LLM_GENERATOR_TIMEOUT_MS", "LLM_AGENT_MAX_TURNS",
+		"LLM_BUDGET_DAILY_USD",
+		"CONFIDENCE_CLASSIFIER_MIN", "CONFIDENCE_GENERATOR_MIN",
+		"THREAD_CONTEXT_WINDOW", "GUEST_MEMORY_LIMIT",
+		"AUTO_REPLAY_ON_BOOT",
+		"ADMIN_TOKEN",
+	} {
+		t.Setenv(k, "")
+	}
+}
+
 func TestLoadDefaults(t *testing.T) {
+	clearConfigEnv(t)
 	t.Setenv("GUESTY_WEBHOOK_SECRET", "shh")
 	t.Setenv("LLM_API_KEY", "sk-x")
 	c, err := config.Load()

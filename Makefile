@@ -3,7 +3,8 @@
 	dev-up dev-down dev-logs dev-status \
 	e2e e2e-wait e2e-smoke e2e-full tilt-up tilt-down \
 	mise-verify mise-tools mise-env \
-	env-check up up-prod down down-prod logs
+	env-check up up-prod down down-prod logs \
+	up-headless up-prod-headless
 
 # COMPOSE defaults to `podman compose` (rootless-friendly). Override to your
 # preferred binary: make stack-up COMPOSE="docker compose"
@@ -116,41 +117,33 @@ env-check:
 	@mise run env:check 2>/dev/null || true
 	@echo "✓ env ok — LLM_API_KEY set"
 
-# Mock mode: one command for the full inquiry loop with everything mocked.
-up: env-check
-	$(COMPOSE) -f $(DEV_FILE) up -d --build
-	./scripts/wait-for-health.sh
-	@echo ""
-	@echo "✓ Mock stack up:"
-	@echo "    Tester UI       http://localhost:4000"
-	@echo "    Service webhook http://localhost:8080/webhooks/guesty/message-received"
-	@echo "    Guesty mock     http://localhost:3001"
-	@echo "  Smoke:  make e2e-smoke       Down:  make down"
+# Mock mode: launches Tilt — dashboard at :10350 with env pre-flight, live
+# logs, clickable service URLs, and one-click smoke/unit/lint/eval buttons.
+# Ctrl-C exits Tilt (containers keep running; `make down` stops them).
+up:
+	tilt up
 
 down:
 	$(COMPOSE) -f $(DEV_FILE) down
 
-# Prod-like mode: same UI, but service talks to real Mongo + Valkey and
-# exports traces/metrics to Alloy → Tempo/Prom → Grafana. Guesty is still
-# Mockoon (no real creds). Bringing up 3 merged compose files puts every
-# service on one network so inquiryiq reaches mongo/valkey/alloy by name.
-up-prod: env-check
-	$(COMPOSE) $(PROD_FILES) up -d --build
-	./scripts/wait-for-health.sh
-	@echo ""
-	@echo "✓ Prod-like stack up:"
-	@echo "    Tester UI       http://localhost:4000"
-	@echo "    Service webhook http://localhost:8080/webhooks/guesty/message-received"
-	@echo "    Grafana         http://localhost:3000  (anonymous Admin)"
-	@echo "    Tempo API       http://localhost:3200"
-	@echo "    Prometheus      http://localhost:9090"
-	@echo "    Mongo Express   http://localhost:8081"
-	@echo "    RedisInsight    http://localhost:5540"
-	@echo "    Alloy UI        http://localhost:12345"
-	@echo "  Smoke:  make e2e-smoke       Down:  make down-prod"
+# Prod-like mode: same Tilt dashboard, but merges stack + dev + prod.override
+# so the service talks to real Mongo + Valkey and exports traces/metrics to
+# Alloy → Tempo/Prom → Grafana. Tilt resource links point at each observability
+# UI (Grafana, Mongo Express, RedisInsight, …). Guesty stays mocked.
+up-prod:
+	MODE=prod tilt up
 
 down-prod:
 	$(COMPOSE) $(PROD_FILES) down
+
+# Headless variants — scripted compose up without Tilt, for CI or when you
+# just want the stack running in the background.
+up-headless: env-check
+	$(COMPOSE) -f $(DEV_FILE) up -d --build
+	./scripts/wait-for-health.sh
+up-prod-headless: env-check
+	$(COMPOSE) $(PROD_FILES) up -d --build
+	./scripts/wait-for-health.sh
 
 logs:
 	$(COMPOSE) -f $(DEV_FILE) logs -f

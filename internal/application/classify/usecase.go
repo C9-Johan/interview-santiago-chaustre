@@ -52,7 +52,9 @@ type Input struct {
 
 // Classify returns a typed domain.Classification. Retries once on unparseable
 // or schema-invalid output with an appended corrective system message. Wraps
-// domain.ErrClassificationInvalid when the second attempt also fails.
+// domain.ErrClassificationInvalid when the second attempt also fails; the
+// returned error carries the last raw output and the first schema violation
+// so the caller's log pinpoints what the model actually produced.
 func (u *UseCase) Classify(ctx context.Context, in Input) (domain.Classification, error) {
 	ctx, cancel := context.WithTimeout(ctx, u.timeout)
 	defer cancel()
@@ -61,19 +63,22 @@ func (u *UseCase) Classify(ctx context.Context, in Input) (domain.Classification
 		{Role: openai.ChatMessageRoleSystem, Content: systemPrompt},
 		{Role: openai.ChatMessageRoleUser, Content: buildUserMessage(in)},
 	}
+	var lastRaw, lastReason string
 	for range 2 {
 		resp, err := u.llm.Chat(ctx, u.request(messages))
 		if err != nil {
 			return domain.Classification{}, fmt.Errorf("classifier chat: %w", err)
 		}
 		if len(resp.Choices) == 0 {
-			return domain.Classification{}, domain.ErrClassificationInvalid
+			return domain.Classification{}, fmt.Errorf("%w: empty choices", domain.ErrClassificationInvalid)
 		}
 		msg := resp.Choices[0].Message
 		raw := strings.TrimSpace(msg.Content)
-		if parsed, ok := u.validateAndParse(raw); ok {
+		parsed, reason, ok := u.validateAndParse(raw)
+		if ok {
 			return parsed, nil
 		}
+		lastRaw, lastReason = raw, reason
 		messages = append(messages,
 			msg,
 			openai.ChatCompletionMessage{
@@ -82,7 +87,19 @@ func (u *UseCase) Classify(ctx context.Context, in Input) (domain.Classification
 			},
 		)
 	}
-	return domain.Classification{}, domain.ErrClassificationInvalid
+	return domain.Classification{}, fmt.Errorf(
+		"%w: %s (raw=%s)",
+		domain.ErrClassificationInvalid,
+		lastReason,
+		truncate(lastRaw, 400),
+	)
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }
 
 func (u *UseCase) request(messages []openai.ChatCompletionMessage) openai.ChatCompletionRequest {
@@ -97,24 +114,33 @@ func (u *UseCase) request(messages []openai.ChatCompletionMessage) openai.ChatCo
 	}
 }
 
-func (u *UseCase) validateAndParse(raw string) (domain.Classification, bool) {
+// validateAndParse returns the parsed domain object, the human-readable
+// reason the input didn't pass (empty on success), and an ok flag.
+func (u *UseCase) validateAndParse(raw string) (domain.Classification, string, bool) {
 	if raw == "" {
-		return domain.Classification{}, false
+		return domain.Classification{}, "empty content", false
 	}
 	loader := gojsonschema.NewStringLoader(raw)
 	result, err := u.schema.Validate(loader)
-	if err != nil || !result.Valid() {
-		return domain.Classification{}, false
+	if err != nil {
+		return domain.Classification{}, "invalid JSON: " + err.Error(), false
+	}
+	if !result.Valid() {
+		errs := result.Errors()
+		if len(errs) > 0 {
+			return domain.Classification{}, "schema: " + errs[0].String(), false
+		}
+		return domain.Classification{}, "schema: unknown violation", false
 	}
 	wire, err := unmarshalClassification([]byte(raw))
 	if err != nil {
-		return domain.Classification{}, false
+		return domain.Classification{}, "unmarshal: " + err.Error(), false
 	}
 	cls, err := wire.toDomain()
 	if err != nil {
-		return domain.Classification{}, false
+		return domain.Classification{}, "domain: " + err.Error(), false
 	}
-	return cls, true
+	return cls, "", true
 }
 
 func buildUserMessage(in Input) string {
