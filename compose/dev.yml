@@ -92,6 +92,16 @@ services:
       - tester
     ports:
       - "8080:8080"
+    # Explicit public resolvers so every contributor's container can reach
+    # api.deepseek.com / api.openai.com regardless of the host's DNS setup.
+    # Some rootless podman + split-horizon corporate DNS stacks fail to
+    # forward external lookups from the default in-container resolver;
+    # adding 1.1.1.1 / 8.8.8.8 makes the LLM call portable. Compose keeps
+    # the runtime-embedded DNS for internal service-name resolution
+    # (mockoon:3001, tester:4000) so these don't conflict.
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
     restart: unless-stopped
 
 volumes:
