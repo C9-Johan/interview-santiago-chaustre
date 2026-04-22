@@ -28,6 +28,10 @@
         <span>Agent</span>
         <span id="agent-badge" class="badge hidden">0</span>
       </button>
+      <button class="tab" role="tab" data-tab="traces" aria-selected="false">
+        <span class="tab-icon" aria-hidden="true">🧭</span>
+        <span>Traces</span>
+      </button>
     </nav>
     <div class="toolbar">
       <label>Guest <input id="guest-name" value="Tester" /></label>
@@ -47,6 +51,7 @@
   <main>
     <section id="view-customer" class="view active" role="tabpanel"></section>
     <section id="view-agent" class="view" role="tabpanel" hidden></section>
+    <section id="view-traces" class="view" role="tabpanel" hidden></section>
   </main>
 
   <script type="module" src="/app.js"></script>

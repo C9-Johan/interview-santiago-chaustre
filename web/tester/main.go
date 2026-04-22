@@ -111,6 +111,10 @@ type logEntry struct {
 	Role string    `json:"role"` // "guest" | "bot" | "note"
 	Body string    `json:"body"`
 	At   time.Time `json:"at"`
+	// PostID is set only on guest entries — it's the id the service will
+	// use to key the classification and any escalation for this turn.
+	// The UI uses it to fetch /api/turn-details/{post_id}.
+	PostID string `json:"post_id,omitempty"`
 }
 
 func (c *conversationLog) append(convID string, e logEntry) {
@@ -213,6 +217,7 @@ func (s *server) routes() http.Handler {
 	api.HandleFunc("POST /api/tool-calls/reset", s.handleToolCallsReset)
 	api.HandleFunc("POST /api/confirm-reservation/{id}", s.handleConfirmReservation)
 	api.HandleFunc("GET /api/conversions", s.handleConversions)
+	api.HandleFunc("GET /api/turn-details/{post_id}", s.handleTurnDetails)
 	api.HandleFunc("POST /communication/conversations/{id}/send-message", s.handleSendMessage)
 
 	static := http.FileServer(http.Dir(s.cfg.staticDir))
@@ -344,10 +349,12 @@ func (s *server) handleSend(w http.ResponseWriter, r *http.Request) {
 
 	// Record the guest post in the UI-visible log so the chat shows it
 	// immediately, before the service's async pipeline produces the bot reply.
+	// PostID flows through to the UI so it can fetch classification details.
 	s.logs.append(req.ConversationID, logEntry{
-		Role: "guest",
-		Body: req.Body,
-		At:   envelope.Message.CreatedAt,
+		Role:   "guest",
+		Body:   req.Body,
+		At:     envelope.Message.CreatedAt,
+		PostID: envelope.Message.PostID,
 	})
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -545,6 +552,38 @@ func (s *server) handleConfirmReservation(w http.ResponseWriter, r *http.Request
 		"service_status": resp.StatusCode,
 		"service_body":   string(body),
 	})
+}
+
+// handleTurnDetails proxies /admin/turn/{post_id} through the admin bearer
+// so the UI can show the service's own classification + escalation view
+// for each guest message. No caching — the service's response already
+// represents the freshest state.
+func (s *server) handleTurnDetails(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.adminToken == "" {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "ADMIN_TOKEN not configured"})
+		return
+	}
+	postID := r.PathValue("post_id")
+	if strings.TrimSpace(postID) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "post_id required"})
+		return
+	}
+	upstream, err := http.NewRequestWithContext(r.Context(), http.MethodGet,
+		s.cfg.serviceURL+"/admin/turn/"+url.PathEscape(postID), nil)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	upstream.Header.Set("Authorization", "Bearer "+s.cfg.adminToken)
+	resp, err := http.DefaultClient.Do(upstream)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
 }
 
 // handleConversions proxies /admin/conversions with the bearer token so the
