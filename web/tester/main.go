@@ -75,6 +75,7 @@ type config struct {
 	serviceURL    string
 	mockoonURL    string
 	webhookSecret string
+	adminToken    string
 	staticDir     string
 }
 
@@ -84,6 +85,7 @@ func loadConfig() config {
 		serviceURL:    envOr("INQUIRYIQ_URL", "http://localhost:8080"),
 		mockoonURL:    envOr("MOCKOON_URL", "http://localhost:3001"),
 		webhookSecret: envOr("GUESTY_WEBHOOK_SECRET", "whsec_demo"),
+		adminToken:    envOr("ADMIN_TOKEN", ""),
 		staticDir:     envOr("TESTER_STATIC", "./static"),
 	}
 }
@@ -209,6 +211,8 @@ func (s *server) routes() http.Handler {
 	api.HandleFunc("GET /api/health", s.handleHealth)
 	api.HandleFunc("GET /api/tool-calls", s.handleToolCalls)
 	api.HandleFunc("POST /api/tool-calls/reset", s.handleToolCallsReset)
+	api.HandleFunc("POST /api/confirm-reservation/{id}", s.handleConfirmReservation)
+	api.HandleFunc("GET /api/conversions", s.handleConversions)
 	api.HandleFunc("POST /communication/conversations/{id}/send-message", s.handleSendMessage)
 
 	static := http.FileServer(http.Dir(s.cfg.staticDir))
@@ -493,6 +497,80 @@ func (s *server) handleToolCalls(w http.ResponseWriter, _ *http.Request) {
 func (s *server) handleToolCallsReset(w http.ResponseWriter, _ *http.Request) {
 	s.toolCalls.reset()
 	writeJSON(w, http.StatusOK, map[string]string{"ok": "true"})
+}
+
+// handleConfirmReservation signs and forwards a reservation.updated webhook
+// to the service so the smoke test (and the UI) can drive a managed
+// reservation to "confirmed" without a real Guesty PMS. The path id is the
+// reservationId the service marked as managed during the auto-reply turn.
+func (s *server) handleConfirmReservation(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if strings.TrimSpace(id) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "reservation id required"})
+		return
+	}
+	payload, err := json.Marshal(map[string]string{
+		"event":         "reservation.updated",
+		"reservationId": id,
+		"status":        "confirmed",
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	svixID := "msg_" + uuid.NewString()
+	svixTS := fmt.Sprintf("%d", time.Now().Unix())
+	signature := signSvix(s.cfg.webhookSecret, svixID, svixTS, payload)
+	fwd, err := http.NewRequestWithContext(r.Context(), http.MethodPost,
+		s.cfg.serviceURL+"/webhooks/guesty/reservation-updated",
+		bytes.NewReader(payload))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	fwd.Header.Set("Content-Type", "application/json")
+	fwd.Header.Set("svix-id", svixID)
+	fwd.Header.Set("svix-timestamp", svixTS)
+	fwd.Header.Set("svix-signature", "v1,"+signature)
+	fwd.Header.Set("user-agent", "Svix-Webhooks/tester")
+	resp, err := http.DefaultClient.Do(fwd)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "forward failed: " + err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"reservation_id": id,
+		"service_status": resp.StatusCode,
+		"service_body":   string(body),
+	})
+}
+
+// handleConversions proxies /admin/conversions with the bearer token so the
+// UI + smoke script can read conversion-rate stats without knowing the
+// service's ADMIN_TOKEN.
+func (s *server) handleConversions(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.adminToken == "" {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "ADMIN_TOKEN not configured"})
+		return
+	}
+	upstream, err := http.NewRequestWithContext(r.Context(), http.MethodGet,
+		s.cfg.serviceURL+"/admin/conversions", nil)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	upstream.Header.Set("Authorization", "Bearer "+s.cfg.adminToken)
+	resp, err := http.DefaultClient.Do(upstream)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
 }
 
 // handleSendMessage intercepts the outbound Guesty reply. The service POSTs

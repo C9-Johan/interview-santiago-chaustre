@@ -200,10 +200,11 @@ func buildApp(ctx context.Context, cfg *config.Config, log *slog.Logger, tel *te
 		Now:          func() time.Time { return time.Now().UTC() },
 	}
 	adminHandler := &transporthttp.AdminHandler{
-		Source: toggles,
-		Budget: watcher,
-		Token:  cfg.AdminToken,
-		Log:    log,
+		Source:      toggles,
+		Budget:      watcher,
+		Conversions: stores.Conversions,
+		Token:       cfg.AdminToken,
+		Log:         log,
 	}
 
 	return &appBundle{

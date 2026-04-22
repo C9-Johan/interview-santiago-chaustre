@@ -36,6 +36,7 @@ services:
       INQUIRYIQ_URL: "http://inquiryiq:8080"
       MOCKOON_URL: "http://mockoon:3001"
       GUESTY_WEBHOOK_SECRET: "whsec_demo"
+      ADMIN_TOKEN: "admin-demo"
     depends_on:
       - mockoon
     ports:

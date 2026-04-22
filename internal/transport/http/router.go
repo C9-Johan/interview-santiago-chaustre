@@ -21,6 +21,7 @@ func NewRouter(h *Handler, rh *ReservationHandler, ah *AdminHandler) nethttp.Han
 		r.Get("/admin/auto-response", ah.GetAutoResponse)
 		r.Post("/admin/auto-response", ah.SetAutoResponse)
 		r.Get("/admin/budget", ah.GetBudget)
+		r.Get("/admin/conversions", ah.GetConversions)
 	}
 	r.Get("/escalations", h.Escalations)
 	r.Get("/healthz", h.Health)

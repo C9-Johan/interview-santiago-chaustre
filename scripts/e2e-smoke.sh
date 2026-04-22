@@ -135,4 +135,30 @@ case "$reason" in
         ;;
 esac
 
-echo "✓ e2e smoke passed"
+# Conversion-rate assertion. The happy auto-reply path calls MarkManaged with
+# the reservation id the service resolved from Mockoon's conversation snapshot
+# — that fixture pins it to res_test_001 — so we confirm exactly that one.
+CONVERSION_RES_ID="${CONVERSION_RES_ID:-res_test_001}"
+
+echo "== confirming managed reservation ($CONVERSION_RES_ID) =="
+confirm_resp=$(curl -sf -X POST "$TESTER_URL/api/confirm-reservation/$CONVERSION_RES_ID" || echo '{}')
+echo "$confirm_resp" | jq -c '.' >/dev/null 2>&1 || true
+
+echo "== polling /api/conversions until converted>=1 =="
+conv_deadline=$(( $(date +%s) + 30 ))
+conv_json=""
+while (( $(date +%s) < conv_deadline )); do
+    conv_json=$(curl -sf "$TESTER_URL/api/conversions" || echo '{}')
+    managed=$(echo "$conv_json" | jq -r '.managed // 0')
+    converted=$(echo "$conv_json" | jq -r '.converted // 0')
+    if [[ "$managed" -ge 1 && "$converted" -ge 1 ]]; then
+        rate=$(echo "$conv_json" | jq -r '.rate // 0')
+        echo "✓ conversion tracker: managed=$managed converted=$converted rate=$rate"
+        echo "✓ e2e smoke passed"
+        exit 0
+    fi
+    sleep 1
+done
+echo "✗ conversion tracker never reached managed>=1 AND converted>=1" >&2
+echo "  last response: $conv_json" >&2
+exit 1

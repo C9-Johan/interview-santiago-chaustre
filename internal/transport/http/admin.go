@@ -25,17 +25,25 @@ type AdminBudgetSource interface {
 	Status() budget.Status
 }
 
+// AdminConversionsSource is the consumer-side contract for the
+// /admin/conversions endpoint. The handler pulls the raw managed list
+// and derives the counts so the store interface stays small.
+type AdminConversionsSource interface {
+	List(ctx context.Context, limit int) ([]domain.ManagedReservation, error)
+}
+
 // AdminHandler exposes operator-controlled runtime state — the auto-response
 // kill-switch plus a read-only view of the LLM budget. Guarded by a shared
 // bearer token against the Authorization header; an empty configured Token
 // disables the routes entirely (503) so an unconfigured deployment never
-// accepts anonymous flips. Budget is optional — when nil, GET /admin/budget
-// returns 503 so the route does not lie.
+// accepts anonymous flips. Budget/Conversions are optional — when nil, their
+// routes return 503 so the endpoints do not lie.
 type AdminHandler struct {
-	Source AdminTogglesSource
-	Budget AdminBudgetSource
-	Token  string
-	Log    *slog.Logger
+	Source      AdminTogglesSource
+	Budget      AdminBudgetSource
+	Conversions AdminConversionsSource
+	Token       string
+	Log         *slog.Logger
 }
 
 // GetAutoResponse returns the current AutoResponseEnabled flag as JSON.
@@ -95,6 +103,43 @@ func (h *AdminHandler) GetBudget(w nethttp.ResponseWriter, r *nethttp.Request) {
 		return
 	}
 	writeJSON(w, nethttp.StatusOK, h.Budget.Status())
+}
+
+// GetConversions summarises the bot-managed → converted reservations the
+// tracker has recorded so operators can watch conversion rate alongside the
+// live escalation queue. 503 when no Conversions source is wired — the
+// endpoint never fabricates zeros.
+func (h *AdminHandler) GetConversions(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if !h.authorized(w, r) {
+		return
+	}
+	if h.Conversions == nil {
+		writeJSON(w, nethttp.StatusServiceUnavailable, map[string]string{"error": "conversion tracking disabled"})
+		return
+	}
+	items, err := h.Conversions.List(r.Context(), 500)
+	if err != nil {
+		h.Log.WarnContext(r.Context(), "admin_conversions_list_failed", slog.String("err", err.Error()))
+		writeJSON(w, nethttp.StatusInternalServerError, map[string]string{"error": "list failed"})
+		return
+	}
+	managed := len(items)
+	converted := 0
+	for i := range items {
+		if items[i].ConvertedAt != nil {
+			converted++
+		}
+	}
+	rate := 0.0
+	if managed > 0 {
+		rate = float64(converted) / float64(managed)
+	}
+	writeJSON(w, nethttp.StatusOK, map[string]any{
+		"managed":   managed,
+		"converted": converted,
+		"rate":      rate,
+		"items":     items,
+	})
 }
 
 // authorized enforces bearer-token auth. Constant-time comparison avoids
