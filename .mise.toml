@@ -1,0 +1,51 @@
+# mise-en-place — tool pinning for InquiryIQ.
+#
+# Drop into a shell with everything this repo needs:
+#
+#   mise install        # installs exactly the versions below
+#   mise x -- make check
+#
+# mise auto-activates on `cd` into the repo if you've enabled the shell hook
+# (https://mise.jdx.dev/getting-started.html).
+
+[tools]
+# Service language. Pinned to the same major we use in CI and go.mod.
+go = "1.26"
+
+# Node backs mockoon-cli and tilt. Keeping a single LTS here means contributors
+# don't hop between npm ecosystems.
+node = "20"
+
+# Linter. "latest" resolves at install time, not on every run — reproducible
+# enough for an interview slice.
+golangci-lint = "latest"
+
+# gofumpt + goimports are picked up by `make fmt`; mise installs them as
+# go binaries so they sit in PATH alongside the pinned go.
+"go:mvdan.cc/gofumpt" = "latest"
+"go:golang.org/x/tools/cmd/goimports" = "latest"
+
+# Local-dev orchestration + health polling.
+tilt = "latest"
+jq = "latest"
+
+# Mockoon is an npm package; mise's npm backend installs it per-project so
+# there is no global dependency. Compose also pulls the Mockoon image, but
+# the npm install lets you run `make mock-up` natively.
+"npm:@mockoon/cli" = "latest"
+
+[env]
+# Anything downstream that reads these.
+INQUIRYIQ_ROOT = "{{ config_root }}"
+
+[tasks.check]
+description = "Full gate: fmt, vet, lint, race-tests."
+run = "make check"
+
+[tasks.e2e]
+description = "Bring up the dev stack, wait for health, run a smoke test."
+run = "make e2e"
+
+[tasks.tilt]
+description = "Open the Tilt dashboard (UI + triggerable test runners)."
+run = "tilt up"

@@ -1,6 +1,7 @@
 .PHONY: fmt lint vet test test-integration build run mock-up demo check \
 	stack-up stack-down stack-logs stack-status eval eval-multi \
-	dev-up dev-down dev-logs dev-status
+	dev-up dev-down dev-logs dev-status \
+	e2e e2e-wait e2e-smoke e2e-full tilt-up tilt-down
 
 # COMPOSE defaults to `podman compose` (rootless-friendly). Override to your
 # preferred binary: make stack-up COMPOSE="docker compose"
@@ -75,3 +76,33 @@ dev-logs:
 	$(COMPOSE) -f $(DEV_FILE) logs -f
 dev-status:
 	$(COMPOSE) -f $(DEV_FILE) ps
+
+# --- End-to-end ----------------------------------------------------------
+# `make e2e` is the "does everything still work" button for the interviewer.
+# Brings the dev stack up, waits for health, runs the smoke script, and
+# leaves the stack running so you can click around the tester UI afterward.
+# Tear it all down with `make dev-down` (or `make e2e-full` which does it
+# for you).
+e2e: dev-up e2e-wait e2e-smoke
+
+e2e-wait:
+	./scripts/wait-for-health.sh
+
+e2e-smoke:
+	./scripts/e2e-smoke.sh
+
+# Run the full flow and clean up regardless of pass/fail — suitable for
+# CI or a one-shot "did I break it" check.
+e2e-full:
+	$(MAKE) dev-up
+	$(MAKE) e2e-wait
+	-$(MAKE) e2e-smoke; rc=$$?; $(MAKE) dev-down; exit $$rc
+
+# --- Tilt ----------------------------------------------------------------
+# Dashboard at http://localhost:10350 with per-service logs, port-forwards,
+# and one-click buttons for unit/integration/e2e/lint/eval. Requires tilt
+# in PATH (mise installs it).
+tilt-up:
+	tilt up
+tilt-down:
+	tilt down
