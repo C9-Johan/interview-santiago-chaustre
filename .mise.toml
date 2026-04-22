@@ -1,51 +1,93 @@
-# mise-en-place — tool pinning for InquiryIQ.
+# mise-en-place — tool pinning + env bootstrap for InquiryIQ.
 #
 # Drop into a shell with everything this repo needs:
 #
 #   mise install        # installs exactly the versions below
-#   mise x -- make check
+#   mise run check      # fmt + vet + lint + race-tests
+#   mise run e2e        # bring up dev stack, wait for health, run smoke
 #
-# mise auto-activates on `cd` into the repo if you've enabled the shell hook
-# (https://mise.jdx.dev/getting-started.html).
+# mise auto-activates on `cd` into the repo if you've enabled the shell
+# hook (https://mise.jdx.dev/getting-started.html#activate-mise).
+#
+# Node + mockoon-cli intentionally absent: the dev compose uses the
+# Mockoon Docker image, and building node from source on NixOS hits a
+# chicken-and-egg with python + signing keys. If you need native
+# mockoon-cli for `make mock-up`, install node through your system
+# package manager and `npm i -g @mockoon/cli`.
 
 [tools]
-# Service language. Pinned to the same major we use in CI and go.mod.
 go = "1.26"
-
-# Node backs mockoon-cli and tilt. Keeping a single LTS here means contributors
-# don't hop between npm ecosystems.
-node = "20"
-
-# Linter. "latest" resolves at install time, not on every run — reproducible
-# enough for an interview slice.
 golangci-lint = "latest"
-
-# gofumpt + goimports are picked up by `make fmt`; mise installs them as
-# go binaries so they sit in PATH alongside the pinned go.
 "go:mvdan.cc/gofumpt" = "latest"
 "go:golang.org/x/tools/cmd/goimports" = "latest"
 
-# Local-dev orchestration + health polling.
+# Dashboard + smoke-script helpers.
 tilt = "latest"
 jq = "latest"
 
-# Mockoon is an npm package; mise's npm backend installs it per-project so
-# there is no global dependency. Compose also pulls the Mockoon image, but
-# the npm install lets you run `make mock-up` natively.
-"npm:@mockoon/cli" = "latest"
+# ---------------------------------------------------------------------------
+# Env vars.
+#
+# mise layers env in this order (later wins):
+#   1. [env] table below — non-secret dev defaults, checked into git
+#   2. .env.local — private overrides, gitignored (see .env.local.example)
+#   3. shell env — whatever you already export
+#
+# Keep secrets (LLM_API_KEY, ADMIN_TOKEN) out of this file. Copy
+# .env.local.example to .env.local and fill it in.
+# ---------------------------------------------------------------------------
 
 [env]
-# Anything downstream that reads these.
+# Paths + identity — safe to check in.
 INQUIRYIQ_ROOT = "{{ config_root }}"
+
+# Tester / dev compose defaults. Every env the service reads has a sane
+# fallback in config.Load, but declaring the common ones here makes them
+# visible when you `mise env` and gives you one place to tweak them.
+GUESTY_WEBHOOK_SECRET = "whsec_demo"
+ADMIN_TOKEN = "admin-demo"
+AUTO_RESPONSE_ENABLED = "true"
+LLM_BASE_URL = "https://api.deepseek.com/v1"
+LLM_MODEL_CLASSIFIER = "deepseek-chat"
+LLM_MODEL_GENERATOR = "deepseek-chat"
+LLM_BUDGET_DAILY_USD = "2.0"
+DEBOUNCE_WINDOW_MS = "3000"
+DEBOUNCE_MAX_WAIT_MS = "15000"
+
+# Load .env.local LAST so developer overrides win over the defaults above.
+# Missing file is silently ignored (see redirect = true alternative in
+# mise docs if you want an error instead).
+_.file = ".env.local"
+
+# ---------------------------------------------------------------------------
+# Tasks — mise's built-in task runner. `mise run <task>` is equivalent to
+# calling the wrapped make target, but it picks up the toolchain and env
+# from this file automatically.
+# ---------------------------------------------------------------------------
 
 [tasks.check]
 description = "Full gate: fmt, vet, lint, race-tests."
 run = "make check"
 
 [tasks.e2e]
-description = "Bring up the dev stack, wait for health, run a smoke test."
+description = "Bring up the dev stack, wait for health, run the smoke script."
 run = "make e2e"
 
 [tasks.tilt]
 description = "Open the Tilt dashboard (UI + triggerable test runners)."
 run = "tilt up"
+
+[tasks."env:check"]
+description = "Print the resolved env — verify LLM_API_KEY is set before an e2e run."
+run = '''
+for k in LLM_API_KEY LLM_BASE_URL LLM_MODEL_CLASSIFIER GUESTY_WEBHOOK_SECRET ADMIN_TOKEN LLM_BUDGET_DAILY_USD; do
+    val="${!k:-}"
+    if [ -z "$val" ]; then
+        echo "  $k  (unset)"
+    elif echo "$k" | grep -qE 'API_KEY|TOKEN|SECRET'; then
+        echo "  $k  ${val:0:3}***${val: -3}"
+    else
+        echo "  $k  $val"
+    fi
+done
+'''
