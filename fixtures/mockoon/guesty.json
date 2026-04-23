@@ -178,7 +178,7 @@
       "responses": [
         {
           "uuid": "33333333-3333-3333-3333-333333333351",
-          "body": "{\n  \"_id\": \"res_{{faker 'string.uuid'}}\",\n  \"status\": {{{jsonEscape (body 'status' 'inquiry')}}},\n  \"listingId\": {{{jsonEscape (body 'listingId' '')}}},\n  \"checkIn\": \"{{body 'checkInDateLocalized'}}T15:00:00Z\",\n  \"checkOut\": \"{{body 'checkOutDateLocalized'}}T11:00:00Z\",\n  \"confirmationCode\": \"HOLD-{{faker 'string.alphanumeric' 6}}\"\n}",
+          "body": "{\n  \"_id\": \"res_{{faker 'string.uuid'}}\",\n  \"status\": \"{{body 'status' 'inquiry'}}\",\n  \"listingId\": \"{{body 'listingId' ''}}\",\n  \"checkIn\": \"{{body 'checkInDateLocalized'}}T15:00:00Z\",\n  \"checkOut\": \"{{body 'checkOutDateLocalized'}}T11:00:00Z\",\n  \"confirmationCode\": \"HOLD-{{faker 'string.alphanumeric' 6}}\"\n}",
           "latency": 0,
           "statusCode": 201,
           "label": "Hold created",

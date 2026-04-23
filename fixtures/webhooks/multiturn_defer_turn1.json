@@ -1,0 +1,29 @@
+{
+  "event": "reservation.messageReceived",
+  "reservationId": "res_mt_defer_001",
+  "message": {
+    "postId": "msg_mt_defer_01",
+    "body": "Hi! Is the Soho 2BR available Apr 24-26 for 4 adults?",
+    "createdAt": "2026-04-20T14:31:09Z",
+    "type": "fromGuest",
+    "module": "airbnb2"
+  },
+  "conversation": {
+    "_id": "conv_mt_defer_001",
+    "guestId": "guest_mt_defer_001",
+    "language": "en",
+    "status": "OPEN",
+    "integration": { "platform": "airbnb2" },
+    "meta": {
+      "guestName": "Sarah",
+      "reservations": [{
+        "_id": "res_mt_defer_001",
+        "checkIn": "2026-04-24T22:00:00.000Z",
+        "checkOut": "2026-04-26T16:00:00.000Z",
+        "confirmationCode": "MTDEFER1"
+      }]
+    },
+    "thread": []
+  },
+  "meta": { "eventId": "evt_mt_defer_01", "messageId": "msgid_mt_defer_01" }
+}

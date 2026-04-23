@@ -34,6 +34,11 @@ func TestValidateReply(t *testing.T) {
 		},
 		{"sell_cert_no_avail", domain.Reply{Body: good.Body, CloserBeats: fullBeats, UsedTools: []domain.ToolCall{{Name: "get_listing"}}}, []string{"sell_certainty_without_availability"}},
 		{
+			"sell_cert_with_failed_avail_tool",
+			domain.Reply{Body: good.Body, CloserBeats: fullBeats, UsedTools: []domain.ToolCall{{Name: "check_availability", Error: "timeout"}}},
+			[]string{"sell_certainty_without_availability"},
+		},
+		{
 			// "I'll send the platform booking link" — no booking-link tool exists, so this
 			// is an uncoverable promise the bot can never fulfill. Flag deterministically.
 			"uncovered_send_commitment",
@@ -66,6 +71,18 @@ func TestValidateReply(t *testing.T) {
 				},
 			},
 			nil,
+		},
+		{
+			"hold_commitment_with_failed_tool",
+			domain.Reply{
+				Body:        "Yes the Soho 2BR is open for those dates at $480 total. Quiet courtyard, self check-in. I'll hold the dates while you decide.",
+				CloserBeats: fullBeats,
+				UsedTools: []domain.ToolCall{
+					{Name: "check_availability"},
+					{Name: "hold_reservation", Error: "invalid_listing_id"},
+				},
+			},
+			[]string{"uncovered_commitment_hold"},
 		},
 	}
 	for _, tc := range cases {

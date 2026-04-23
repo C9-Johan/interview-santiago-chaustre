@@ -224,6 +224,9 @@ func TestClientGetConversation(t *testing.T) {
 	if len(got.Reservations) != 1 || got.Reservations[0].ConfirmationCode != "CODE1" {
 		t.Fatalf("reservations %+v", got.Reservations)
 	}
+	if got.Reservations[0].ListingID != "L1" {
+		t.Fatalf("reservation listing id %+v", got.Reservations)
+	}
 	if len(got.Thread) != 1 || got.Thread[0].PostID != "P1" {
 		t.Fatalf("thread %+v", got.Thread)
 	}

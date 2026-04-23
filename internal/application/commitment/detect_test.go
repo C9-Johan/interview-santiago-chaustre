@@ -34,12 +34,17 @@ func TestDetectMatchMatrix(t *testing.T) {
 		{"reserve offer + please do", "Let me reserve those dates for the weekend.", "please do", true},
 		{"book offer + go ahead", "I'll book it for you now if you want.", "go ahead", true},
 		{"lock it in + sounds good", "Want me to lock it in for you?", "sounds good", true},
+		{"lock these dates in variant", "Ready to lock these dates in?", "yes", true},
 		{"bare yes is enough", "Want me to hold the dates?", "yes", true},
+		{"bare yes with punctuation", "Want me to hold the dates?", "yes!", true},
 		{"bare ok is enough", "I'll book it right now.", "ok", true},
+		{"bare ok with punctuation", "I'll book it right now.", "ok.", true},
+		{"affirmative plus question still matches", "I'll hold the dates for you.", "yes, can you do that?", true},
 		{"capitalized and spaced", "I'LL  HOLD THE DATES", "  Yes  Please  ", true},
 		{"short yes please comma form", "Want me to place a hold on the dates?", "yes, please", true},
 		{"no prior offer — yes alone", "Here's our availability: Fri-Sun is open.", "yes please", false},
 		{"prior offer but guest is long question", "I can hold these dates.", "yes please but also what about parking and pets and would the host be ok with late check-in after 11pm", false},
+		{"prior offer but guest defers reservation", "I can hold these dates.", "Yes please, for now answer first some questions before reservation", false},
 		{"unrelated host message", "The total is $480 for 2 nights.", "yes please", false},
 		{"no affirmative — guest asks instead", "I'll hold it if you'd like.", "what about pets?", false},
 		{"empty guest", "I'll hold it.", "", false},
@@ -70,6 +75,29 @@ func TestDetectMaxAffirmativeLenIsBoundary(t *testing.T) {
 	}
 	if commitment.Detect(host, guest+"y").Ok {
 		t.Fatalf("81-char guest must not match (exceeds MaxAffirmativeLen)")
+	}
+}
+
+func TestWantsFinalization(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"lock in", "Yes lock them in for me", true},
+		{"book it", "book it", true},
+		{"confirm booking", "Please confirm booking", true},
+		{"defer first", "for now answer first some questions before reservation", false},
+		{"plain yes", "yes please", false},
+	}
+	for i := range cases {
+		tc := cases[i]
+		t.Run(tc.name, func(t *testing.T) {
+			if got := commitment.WantsFinalization(tc.in); got != tc.want {
+				t.Fatalf("WantsFinalization(%q)=%v want %v", tc.in, got, tc.want)
+			}
+		})
 	}
 }
 

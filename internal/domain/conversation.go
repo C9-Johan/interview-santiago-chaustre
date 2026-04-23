@@ -15,6 +15,7 @@ type Integration struct {
 // Reservation is the minimal view of a Guesty reservation the pipeline uses.
 type Reservation struct {
 	ID               string
+	ListingID        string
 	CheckIn          time.Time
 	CheckOut         time.Time
 	ConfirmationCode string

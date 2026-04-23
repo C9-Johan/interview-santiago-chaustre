@@ -63,6 +63,34 @@ wait_for_outcome() {
     return 1
 }
 
+# wait_for_note_count polls the conversation until note/bot entry count is at
+# least the target, then prints that count.
+wait_for_note_count() {
+    local conv_id="$1"
+    local target="$2"
+    local deadline=$(( $(date +%s) + WAIT_TIMEOUT_SECS ))
+    while (( $(date +%s) < deadline )); do
+        local conv_json
+        conv_json=$(curl -sf "$TESTER_URL/api/conversations/$conv_id" || echo '{}')
+        local count
+        count=$(echo "$conv_json" | jq -r '[.entries[]? | select(.role=="bot" or .role=="note")] | length')
+        if [[ "$count" -ge "$target" ]]; then
+            echo "$count"
+            return 0
+        fi
+        sleep "$SLEEP_INTERVAL"
+    done
+    echo "timeout" >&2
+    return 1
+}
+
+note_count() {
+    local conv_id="$1"
+    local conv_json
+    conv_json=$(curl -sf "$TESTER_URL/api/conversations/$conv_id" || echo '{}')
+    echo "$conv_json" | jq -r '[.entries[]? | select(.role=="bot" or .role=="note")] | length'
+}
+
 escalation_reason() {
     local conv_id="$1"
     curl -sf "$TESTER_URL/api/escalations" \
@@ -73,6 +101,7 @@ escalation_reason() {
 timestamp=$(date +%s)
 HAPPY_CONV="conv_smoke_happy_${timestamp}"
 ESC_CONV="conv_smoke_esc_${timestamp}"
+LOCK_CONV="conv_smoke_lock_${timestamp}"
 
 # Clear the tester's tool-call log so we assert only on calls made during
 # this run. Fire-and-forget — the tester always returns 200.
@@ -134,6 +163,38 @@ case "$reason" in
         echo "⚠ unexpected escalation reason ($reason) — still green, pipeline reacted" >&2
         ;;
 esac
+
+echo "== sending multi-turn lock-in flow =="
+send "$LOCK_CONV" "Hi! Is Soho 2BR available Apr 24-26 for 4 adults? If yes, please hold the dates for me."
+lock_turn1=$(wait_for_outcome "$LOCK_CONV")
+echo "lock flow turn1 outcome: $lock_turn1"
+if [[ "$lock_turn1" != "bot" ]]; then
+    echo "✗ expected turn1 in lock flow to auto-reply with a hold context, got: $lock_turn1" >&2
+    exit 1
+fi
+before_lock_notes=$(wait_for_note_count "$LOCK_CONV" 1)
+echo "lock flow note count before lock request: $before_lock_notes"
+
+send "$LOCK_CONV" "Yes lock them in for me"
+lock_turn2=$(wait_for_outcome "$LOCK_CONV")
+echo "lock flow turn2 outcome: $lock_turn2"
+if [[ "$lock_turn2" != "escalate" ]]; then
+    echo "✗ expected lock request to escalate for human finalization, got: $lock_turn2" >&2
+    exit 1
+fi
+lock_reason=$(escalation_reason "$LOCK_CONV")
+echo "lock flow escalation reason: $lock_reason"
+if [[ "$lock_reason" != "commitment_needs_human" ]]; then
+    echo "✗ expected commitment_needs_human on lock request, got: $lock_reason" >&2
+    exit 1
+fi
+sleep "$SLEEP_INTERVAL"
+after_lock_notes=$(note_count "$LOCK_CONV")
+if [[ "$after_lock_notes" != "$before_lock_notes" ]]; then
+    echo "✗ lock request should not post another bot note (before=$before_lock_notes after=$after_lock_notes)" >&2
+    exit 1
+fi
+echo "✓ lock request escalated without bot-loop note"
 
 # Conversion-rate assertion. The happy auto-reply path calls MarkManaged with
 # the reservation id the service resolved from Mockoon's conversation snapshot

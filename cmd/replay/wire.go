@@ -103,8 +103,8 @@ func rawToInput(raw []byte) (processinquiry.Input, error) {
 }
 
 func resolveListingID(conv domain.Conversation) string {
-	if len(conv.Reservations) > 0 && conv.Reservations[0].ID != "" {
-		return conv.Reservations[0].ID
+	if len(conv.Reservations) > 0 && conv.Reservations[0].ListingID != "" {
+		return conv.Reservations[0].ListingID
 	}
 	return "L1"
 }

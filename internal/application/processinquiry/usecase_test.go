@@ -167,6 +167,32 @@ func (f *fakeClassifications) Get(_ context.Context, postID string) (domain.Clas
 	return c, nil
 }
 
+type fakeReplies struct {
+	saved map[string]domain.Reply
+	mu    sync.Mutex
+}
+
+func newFakeReplies() *fakeReplies {
+	return &fakeReplies{saved: map[string]domain.Reply{}}
+}
+
+func (f *fakeReplies) Put(_ context.Context, postID string, r domain.Reply) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.saved[postID] = r
+	return nil
+}
+
+func (f *fakeReplies) Get(_ context.Context, postID string) (domain.Reply, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	r, ok := f.saved[postID]
+	if !ok {
+		return domain.Reply{}, errors.New("not found")
+	}
+	return r, nil
+}
+
 type fakeMemory struct {
 	records  map[domain.ConversationKey]domain.ConversationMemoryRecord
 	byGuest  map[string][]domain.ConversationMemoryRecord
@@ -400,6 +426,164 @@ func TestRunRestrictedContentInReplyEscalates(t *testing.T) {
 	}
 	if len(esc.records) != 1 || esc.records[0].Reason != "restricted_content" {
 		t.Fatalf("want restricted_content escalation, got %+v", esc.records)
+	}
+}
+
+func TestRunCriticRestrictedContactAndIntentAreAdvisory(t *testing.T) {
+	t.Parallel()
+	clsJSON := `{"primary_code":"Y6","confidence":0.9,"extracted_entities":{"check_in":"2026-04-24","check_out":"2026-04-26","guest_count":4},"risk_flag":false,"next_action":"generate_reply","reasoning":"dates"}`
+	reply := domain.Reply{Body: goodReplyBody, Confidence: 0.9, CloserBeats: closerAll()}
+	deps, g, esc, _, _ := newDeps(t, clsJSON, reply, true, nil)
+	deps.Critic = &fakeCritic{verdict: reviewreply.Verdict{
+		Pass:       false,
+		Issues:     []string{"restricted_contact_exchange", "intent_mismatch"},
+		Confidence: 0.91,
+		Reasoning:  "fixture: noisy critic tags",
+	}}
+
+	processinquiry.New(deps).Run(context.Background(), validInput())
+
+	if len(g.postedNotes) != 1 {
+		t.Fatalf("should still auto-send; got %d notes", len(g.postedNotes))
+	}
+	if len(esc.records) != 0 {
+		t.Fatalf("critic-only advisory tags must not escalate, got %+v", esc.records)
+	}
+}
+
+func TestRunCommitmentHandoffSkippedWhenPriorHoldSucceeded(t *testing.T) {
+	t.Parallel()
+	clsJSON := `{"primary_code":"Y6","confidence":0.9,"extracted_entities":{"check_in":"2026-04-24","check_out":"2026-04-26","guest_count":4},"risk_flag":false,"next_action":"generate_reply","reasoning":"dates"}`
+	reply := domain.Reply{Body: goodReplyBody, Confidence: 0.9, CloserBeats: closerAll()}
+	deps, g, esc, mem, _ := newDeps(t, clsJSON, reply, true, nil)
+	replies := newFakeReplies()
+	deps.Replies = replies
+
+	_ = mem.Update(context.Background(), domain.ConversationKey(testConvID), func(r *domain.ConversationMemoryRecord) {
+		r.Thread = []domain.Message{{
+			PostID: "bot_post_prev",
+			Role:   domain.RoleHost,
+			Body:   "Yes, the Soho 2BR is available. Want me to hold the dates while you decide?",
+		}}
+	})
+	_ = replies.Put(context.Background(), "post_prev", domain.Reply{UsedTools: []domain.ToolCall{{
+		Name:   "hold_reservation",
+		Error:  "",
+		Result: json.RawMessage(`{"id":"res_ok"}`),
+	}}})
+
+	in := validInput()
+	in.Turn.Messages = []domain.Message{{PostID: "post_2", Body: "Yes please", Role: domain.RoleGuest, CreatedAt: time.Now()}}
+	in.Turn.LastPostID = "post_2"
+	processinquiry.New(deps).Run(context.Background(), in)
+
+	if len(esc.records) != 0 {
+		t.Fatalf("should not escalate when prior hold already succeeded, got %+v", esc.records)
+	}
+	if len(g.postedNotes) != 1 {
+		t.Fatalf("should auto-send follow-up reply, got %d notes", len(g.postedNotes))
+	}
+}
+
+func TestRunCommitmentHandoffStillEscalatesWhenPriorHoldFailed(t *testing.T) {
+	t.Parallel()
+	deps, g, esc, mem, _ := newDeps(t, `{"primary_code":"Y6","confidence":0.9,"extracted_entities":{},"risk_flag":false,"next_action":"generate_reply","reasoning":"dates"}`,
+		domain.Reply{}, false, nil)
+	deps.Classifier = mustClassifierErr(t)
+	replies := newFakeReplies()
+	deps.Replies = replies
+
+	_ = mem.Update(context.Background(), domain.ConversationKey(testConvID), func(r *domain.ConversationMemoryRecord) {
+		r.Thread = []domain.Message{{
+			PostID: "bot_post_prev",
+			Role:   domain.RoleHost,
+			Body:   "Want me to hold the dates while you decide?",
+		}}
+	})
+	_ = replies.Put(context.Background(), "post_prev", domain.Reply{UsedTools: []domain.ToolCall{{
+		Name:   "hold_reservation",
+		Error:  "invalid_listing_id: mismatch",
+		Result: json.RawMessage(`{"error":"invalid_listing_id"}`),
+	}}})
+
+	in := validInput()
+	in.Turn.Messages = []domain.Message{{PostID: "post_2", Body: "Yes please", Role: domain.RoleGuest, CreatedAt: time.Now()}}
+	in.Turn.LastPostID = "post_2"
+	processinquiry.New(deps).Run(context.Background(), in)
+
+	if len(g.postedNotes) != 0 {
+		t.Fatalf("must not auto-send when prior hold failed, got %d notes", len(g.postedNotes))
+	}
+	if len(esc.records) != 1 || esc.records[0].Reason != "commitment_needs_human" {
+		t.Fatalf("must escalate commitment flow when prior hold failed, got %+v", esc.records)
+	}
+}
+
+func TestRunCommitmentHandoffSkipsEscalationForNonBotAliasWhenHoldSucceeded(t *testing.T) {
+	t.Parallel()
+	clsJSON := `{"primary_code":"Y6","confidence":0.9,"extracted_entities":{"check_in":"2026-04-24","check_out":"2026-04-26","guest_count":4},"risk_flag":false,"next_action":"generate_reply","reasoning":"dates"}`
+	reply := domain.Reply{Body: goodReplyBody, Confidence: 0.9, CloserBeats: closerAll()}
+	deps, g, esc, mem, _ := newDeps(t, clsJSON, reply, true, nil)
+	replies := newFakeReplies()
+	deps.Replies = replies
+
+	const hostOffer = "Yes, the Soho 2BR is available. Want me to hold the dates while you decide?"
+	_ = mem.Update(context.Background(), domain.ConversationKey(testConvID), func(r *domain.ConversationMemoryRecord) {
+		r.Thread = []domain.Message{
+			{PostID: "bot_post_prev", Role: domain.RoleHost, Body: hostOffer},
+			{PostID: "host_ext_123", Role: domain.RoleHost, Body: hostOffer},
+		}
+	})
+	_ = replies.Put(context.Background(), "post_prev", domain.Reply{UsedTools: []domain.ToolCall{{
+		Name:   "hold_reservation",
+		Error:  "",
+		Result: json.RawMessage(`{"id":"res_ok"}`),
+	}}})
+
+	in := validInput()
+	in.Turn.Messages = []domain.Message{{PostID: "post_2", Body: "Yes please", Role: domain.RoleGuest, CreatedAt: time.Now()}}
+	in.Turn.LastPostID = "post_2"
+	processinquiry.New(deps).Run(context.Background(), in)
+
+	if len(esc.records) != 0 {
+		t.Fatalf("should not escalate when non-bot alias maps to successful hold, got %+v", esc.records)
+	}
+	if len(g.postedNotes) != 1 {
+		t.Fatalf("should auto-send follow-up reply, got %d notes", len(g.postedNotes))
+	}
+}
+
+func TestRunCommitmentHandoffEscalatesOnLockRequestAfterSuccessfulHold(t *testing.T) {
+	t.Parallel()
+	deps, g, esc, mem, _ := newDeps(t, `{"primary_code":"Y6","confidence":0.9,"extracted_entities":{},"risk_flag":false,"next_action":"generate_reply","reasoning":"dates"}`,
+		domain.Reply{}, false, nil)
+	deps.Classifier = mustClassifierErr(t)
+	replies := newFakeReplies()
+	deps.Replies = replies
+
+	_ = mem.Update(context.Background(), domain.ConversationKey(testConvID), func(r *domain.ConversationMemoryRecord) {
+		r.Thread = []domain.Message{{
+			PostID: "bot_post_prev",
+			Role:   domain.RoleHost,
+			Body:   "Great, I've placed a hold on the Soho 2BR for April 24-26 at $480 total. Ready to lock these dates in?",
+		}}
+	})
+	_ = replies.Put(context.Background(), "post_prev", domain.Reply{UsedTools: []domain.ToolCall{{
+		Name:   "hold_reservation",
+		Error:  "",
+		Result: json.RawMessage(`{"id":"res_ok"}`),
+	}}})
+
+	in := validInput()
+	in.Turn.Messages = []domain.Message{{PostID: "post_2", Body: "Yes lock them in for me", Role: domain.RoleGuest, CreatedAt: time.Now()}}
+	in.Turn.LastPostID = "post_2"
+	processinquiry.New(deps).Run(context.Background(), in)
+
+	if len(g.postedNotes) != 0 {
+		t.Fatalf("must not auto-send when guest requests lock-in, got %d notes", len(g.postedNotes))
+	}
+	if len(esc.records) != 1 || esc.records[0].Reason != "commitment_needs_human" {
+		t.Fatalf("must escalate lock-in request after hold, got %+v", esc.records)
 	}
 }
 

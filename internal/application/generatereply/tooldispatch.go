@@ -42,7 +42,12 @@ const dateFormat = "2006-01-02"
 // returns a domain.ToolCall audit record. Errors are encoded into Result as
 // {"error":"..."} so the LLM sees them and can adapt (classic agent-loop
 // error feedback pattern) instead of the loop aborting on the first failure.
-func runTool(ctx context.Context, guesty repository.GuestyClient, tc openai.ToolCall) domain.ToolCall {
+//
+// expectedListingID is the listing the orchestrator resolved for THIS turn.
+// Tools that take a listing_id reject mismatches deterministically — the
+// model has been observed passing the reservation id (e.g. "res_test_001")
+// instead of the listing id, which would silently hold the wrong calendar.
+func runTool(ctx context.Context, guesty repository.GuestyClient, tc openai.ToolCall, expectedListingID string) domain.ToolCall {
 	start := time.Now()
 	rec := domain.ToolCall{
 		Name:      tc.Function.Name,
@@ -50,13 +55,13 @@ func runTool(ctx context.Context, guesty repository.GuestyClient, tc openai.Tool
 	}
 	switch tc.Function.Name {
 	case "get_listing":
-		rec = runGetListing(ctx, guesty, tc, rec)
+		rec = runGetListing(ctx, guesty, tc, rec, expectedListingID)
 	case "check_availability":
-		rec = runCheckAvailability(ctx, guesty, tc, rec)
+		rec = runCheckAvailability(ctx, guesty, tc, rec, expectedListingID)
 	case "get_conversation_history":
 		rec = runGetConversationHistory(ctx, guesty, tc, rec)
 	case "hold_reservation":
-		rec = runHoldReservation(ctx, guesty, tc, rec)
+		rec = runHoldReservation(ctx, guesty, tc, rec, expectedListingID)
 	default:
 		rec.Result, rec.Error = encodeErr("unknown_tool", tc.Function.Name)
 	}
@@ -64,11 +69,28 @@ func runTool(ctx context.Context, guesty repository.GuestyClient, tc openai.Tool
 	return rec
 }
 
-func runGetListing(ctx context.Context, g repository.GuestyClient, tc openai.ToolCall, rec domain.ToolCall) domain.ToolCall {
+// rejectIfWrongListing returns a populated rec with the canonical
+// invalid_listing_id error when the model passed the wrong listing id, or
+// the unchanged rec to signal the caller may proceed. Empty expected means
+// the orchestrator did not resolve a listing — skip the check rather than
+// fail every call.
+func rejectIfWrongListing(got, expected string, rec domain.ToolCall) (domain.ToolCall, bool) {
+	if expected == "" || got == expected {
+		return rec, false
+	}
+	rec.Result, rec.Error = encodeErr("invalid_listing_id",
+		fmt.Sprintf("listing_id must be %q for this turn, got %q — use the listing id from get_listing, not the reservation id", expected, got))
+	return rec, true
+}
+
+func runGetListing(ctx context.Context, g repository.GuestyClient, tc openai.ToolCall, rec domain.ToolCall, expectedListingID string) domain.ToolCall {
 	var args getListingArgs
 	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 		rec.Result, rec.Error = encodeErr("invalid_arguments", err.Error())
 		return rec
+	}
+	if r, rejected := rejectIfWrongListing(args.ListingID, expectedListingID, rec); rejected {
+		return r
 	}
 	res, err := g.GetListing(ctx, args.ListingID)
 	if err != nil {
@@ -79,11 +101,14 @@ func runGetListing(ctx context.Context, g repository.GuestyClient, tc openai.Too
 	return rec
 }
 
-func runCheckAvailability(ctx context.Context, g repository.GuestyClient, tc openai.ToolCall, rec domain.ToolCall) domain.ToolCall {
+func runCheckAvailability(ctx context.Context, g repository.GuestyClient, tc openai.ToolCall, rec domain.ToolCall, expectedListingID string) domain.ToolCall {
 	var args checkAvailArgs
 	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 		rec.Result, rec.Error = encodeErr("invalid_arguments", err.Error())
 		return rec
+	}
+	if r, rejected := rejectIfWrongListing(args.ListingID, expectedListingID, rec); rejected {
+		return r
 	}
 	from, ferr := time.Parse(dateFormat, args.From)
 	to, terr := time.Parse(dateFormat, args.To)
@@ -115,11 +140,14 @@ func runGetConversationHistory(ctx context.Context, g repository.GuestyClient, t
 	return rec
 }
 
-func runHoldReservation(ctx context.Context, g repository.GuestyClient, tc openai.ToolCall, rec domain.ToolCall) domain.ToolCall {
+func runHoldReservation(ctx context.Context, g repository.GuestyClient, tc openai.ToolCall, rec domain.ToolCall, expectedListingID string) domain.ToolCall {
 	var args holdReservationArgs
 	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 		rec.Result, rec.Error = encodeErr("invalid_arguments", err.Error())
 		return rec
+	}
+	if r, rejected := rejectIfWrongListing(args.ListingID, expectedListingID, rec); rejected {
+		return r
 	}
 	checkIn, cinErr := time.Parse(dateFormat, args.CheckIn)
 	checkOut, coutErr := time.Parse(dateFormat, args.CheckOut)

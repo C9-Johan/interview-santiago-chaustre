@@ -317,6 +317,7 @@ func conversationFromWire(wire wireConversation, thread []domain.Message) domain
 		for _, r := range wire.Meta.Reservations {
 			conv.Reservations = append(conv.Reservations, domain.Reservation{
 				ID:               r.ID,
+				ListingID:        r.ListingID,
 				CheckIn:          r.CheckIn,
 				CheckOut:         r.CheckOut,
 				ConfirmationCode: r.ConfirmationCode,

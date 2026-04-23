@@ -214,38 +214,35 @@ async function refreshTurnDetails(postID) {
   } catch (_) {}
 }
 
-// resetDemo wipes service-side and tester-side state so the next turn
-// starts fresh. The button is visible in the header toolbar; we confirm
-// before firing because this is destructive (drops conversation memory,
-// escalation queue, classifications, replies, idempotency claims, and
-// the tester's local logs).
+// resetDemo wipes service-side and tester-side state, rotates the
+// conversation/reservation ids so any late-arriving in-flight pipeline
+// lands in a different bucket the UI no longer polls, and then full
+// page-reloads so the UI starts from a known-empty state with no
+// arrow-js reactivity edge cases to chase.
 async function resetDemo() {
-  if (!confirm("Reset demo state?\n\nThis wipes conversations, escalations, memory, classifications, replies and idempotency on the service, plus the tester's local chat + tool-call log.")) {
+  if (!confirm("Reset demo state?\n\nThis wipes conversations, escalations, memory, classifications, replies and idempotency on the service, plus the tester's local chat + tool-call log, then reloads the page.")) {
     return;
   }
   const btn = document.getElementById("reset-btn");
   if (btn) { btn.disabled = true; btn.textContent = "Resetting…"; }
   try {
     const res = await fetch("/api/reset", { method: "POST" });
-    const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      state.error = data.error || `reset failed (HTTP ${res.status})`;
+      const data = await res.json().catch(() => ({}));
+      alert("Reset failed: " + (data.error || `HTTP ${res.status}`));
+      if (btn) { btn.disabled = false; btn.textContent = "Reset demo"; }
       return;
     }
-    state.messages = [];
-    state.escalations = [];
-    state.selectedEscID = null;
-    state.selectedTimeline = [];
-    state.turnDetails = {};
-    state.openPanels = {};
-    state.bannerDismissed = false;
-    state.error = null;
-    state.lastStatus = null;
-    refreshConversation();
-    refreshEscalations();
+    const ts = Date.now().toString(36);
+    try {
+      const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+      saved.conversation_id = `conv_ui_${ts}`;
+      saved.reservation_id  = `res_ui_${ts}`;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(saved));
+    } catch (_) {}
+    location.reload();
   } catch (e) {
-    state.error = e.message;
-  } finally {
+    alert("Reset failed: " + e.message);
     if (btn) { btn.disabled = false; btn.textContent = "Reset demo"; }
   }
 }

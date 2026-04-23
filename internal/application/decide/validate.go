@@ -49,10 +49,10 @@ func ValidateReply(r domain.Reply) []string {
 	// (advisory missing_beat_* tags) and intent_alignment (hard blocker);
 	// the validator only enforces the objective sell_certainty/tool pairing
 	// because that's grounded in actual UsedTools, not self-report.
-	if r.CloserBeats.SellCertainty && !usedTool(r.UsedTools, "check_availability") {
+	if r.CloserBeats.SellCertainty && !usedSuccessfulTool(r.UsedTools, "check_availability") {
 		issues = append(issues, "sell_certainty_without_availability")
 	}
-	if holdCommitmentPattern.MatchString(r.Body) && !usedTool(r.UsedTools, "hold_reservation") {
+	if holdCommitmentPattern.MatchString(r.Body) && !usedSuccessfulTool(r.UsedTools, "hold_reservation") {
 		issues = append(issues, "uncovered_commitment_hold")
 	}
 	if channelCommitmentPattern.MatchString(r.Body) {
@@ -64,9 +64,9 @@ func ValidateReply(r domain.Reply) []string {
 	return issues
 }
 
-func usedTool(calls []domain.ToolCall, name string) bool {
+func usedSuccessfulTool(calls []domain.ToolCall, name string) bool {
 	for i := range calls {
-		if calls[i].Name == name {
+		if calls[i].Name == name && calls[i].Error == "" {
 			return true
 		}
 	}

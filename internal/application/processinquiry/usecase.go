@@ -3,6 +3,7 @@ package processinquiry
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -357,44 +358,143 @@ func (u *UseCase) priorContext(ctx context.Context, in Input) domain.PriorContex
 	}
 }
 
-// commitmentHandoff runs the deterministic commitment detector before any
-// LLM call. When the prior host turn offered an action the system cannot
-// fulfil (hold dates, reserve, book for you) AND the current guest turn is
-// a short affirmative, we escalate to a human regardless of classifier or
-// generator output. This is the safety net behind the generator prompt — a
-// prompt regression cannot produce a fabricated second commitment because
-// this guard fires first. Returns true when the turn was handled.
+// commitmentHandoff runs the deterministic commitment detector before any LLM
+// call. It scans prior host messages newest->oldest for an actionable offer +
+// guest acceptance. If the matched offer is already backed by a successful
+// hold_reservation tool run, we skip escalation and let the normal pipeline
+// continue. Otherwise we escalate to a human. Returns true when this function
+// handled the turn.
 func (u *UseCase) commitmentHandoff(ctx context.Context, in Input, prior domain.PriorContext) bool {
-	latestHost := latestHostBody(prior.Thread)
-	if latestHost == "" {
-		return false
-	}
 	guestBody := lastGuestBody(in.Turn)
 	if guestBody == "" {
 		return false
 	}
-	match := commitment.Detect(latestHost, guestBody)
-	if !match.Ok {
+	candidate, ok := u.latestCommitmentCandidate(ctx, prior.Thread, guestBody)
+	if !ok {
 		return false
 	}
 	u.recordEscalation(ctx, in, domain.Classification{}, nil, domain.Decision{
-		Reason: match.EscalationTag,
+		Reason: candidate.match.EscalationTag,
 		Detail: []string{
-			"matched_offer=" + match.MatchedOffer,
-			"matched_reply=" + match.MatchedReply,
+			"matched_offer=" + candidate.match.MatchedOffer,
+			"matched_reply=" + candidate.match.MatchedReply,
 		},
 	})
 	u.closeTurn(ctx, in, domain.Classification{}, nil, false)
 	return true
 }
 
-func latestHostBody(thread []domain.Message) string {
+type commitmentCandidate struct {
+	host  domain.Message
+	match commitment.Result
+}
+
+func (u *UseCase) latestCommitmentCandidate(
+	ctx context.Context,
+	thread []domain.Message,
+	guestBody string,
+) (commitmentCandidate, bool) {
+	var fallback commitmentCandidate
+	haveFallback := false
 	for i := len(thread) - 1; i >= 0; i-- {
-		if thread[i].Role == domain.RoleHost {
-			return thread[i].Body
+		host := thread[i]
+		if host.Role != domain.RoleHost || strings.TrimSpace(host.Body) == "" {
+			continue
+		}
+		match := commitment.Detect(host.Body, guestBody)
+		if !match.Ok {
+			continue
+		}
+		holdSucceeded := u.hasSuccessfulHold(ctx, host.PostID) || u.hasSuccessfulHoldByBodyAlias(ctx, thread, host)
+		if holdSucceeded {
+			if commitment.WantsFinalization(guestBody) {
+				return commitmentCandidate{host: host, match: match}, true
+			}
+			return commitmentCandidate{}, false
+		}
+		candidate := commitmentCandidate{host: host, match: match}
+		if strings.HasPrefix(host.PostID, "bot_") {
+			return candidate, true
+		}
+		if !haveFallback {
+			fallback = candidate
+			haveFallback = true
 		}
 	}
-	return ""
+	if haveFallback {
+		return fallback, true
+	}
+	return commitmentCandidate{}, false
+}
+
+func (u *UseCase) hasSuccessfulHold(ctx context.Context, hostPostID string) bool {
+	if u.d.Replies == nil {
+		return false
+	}
+	for _, replyPostID := range holdLookupIDs(hostPostID) {
+		reply, err := u.d.Replies.Get(ctx, replyPostID)
+		if err != nil {
+			continue
+		}
+		for i := range reply.UsedTools {
+			if reply.UsedTools[i].Name != "hold_reservation" {
+				continue
+			}
+			if reply.UsedTools[i].Error == "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func holdLookupIDs(hostPostID string) []string {
+	if hostPostID == "" {
+		return nil
+	}
+	ids := []string{hostPostID}
+	if strings.HasPrefix(hostPostID, "bot_") {
+		trimmed := strings.TrimPrefix(hostPostID, "bot_")
+		if trimmed != "" {
+			ids = append(ids, trimmed)
+		}
+	} else {
+		ids = append(ids, "bot_"+hostPostID)
+	}
+	return ids
+}
+
+func (u *UseCase) hasSuccessfulHoldByBodyAlias(ctx context.Context, thread []domain.Message, host domain.Message) bool {
+	if strings.HasPrefix(host.PostID, "bot_") {
+		return false
+	}
+	hostBody := comparableBody(host.Body)
+	if hostBody == "" {
+		return false
+	}
+	for i := len(thread) - 1; i >= 0; i-- {
+		candidate := thread[i]
+		if candidate.Role != domain.RoleHost || !strings.HasPrefix(candidate.PostID, "bot_") {
+			continue
+		}
+		if candidate.PostID == host.PostID {
+			continue
+		}
+		if comparableBody(candidate.Body) != hostBody {
+			continue
+		}
+		if u.hasSuccessfulHold(ctx, candidate.PostID) {
+			return true
+		}
+	}
+	return false
+}
+
+func comparableBody(s string) string {
+	if s == "" {
+		return ""
+	}
+	return strings.Join(strings.Fields(strings.ToLower(s)), " ")
 }
 
 func lastGuestBody(t domain.Turn) string {
@@ -454,17 +554,13 @@ func mergeThread(memory, webhook, currentTurn []domain.Message) []domain.Message
 // with check_availability (decide.ValidateReply), and uncovered hold /
 // out-of-band channel commitments are caught by uncovered_commitment_*
 // patterns. The critic-LLM second-guessing a tool-grounded reply is signal
-// for observability, not a hard kill switch. Safety tags (restricted_*,
-// hedging, intent-alignment, critic_uncertain) stay as blockers.
+// for observability, not a hard kill switch. Deterministic rules already
+// enforce restricted content and commitment promises, so those critic tags are
+// advisory-only here to avoid false escalations.
 var criticBlockerTags = map[string]struct{}{
-	"hedging":                     {},
-	"restricted_payment":          {},
-	"restricted_address":          {},
-	"restricted_guarantee":        {},
-	"restricted_contact_exchange": {},
-	"intent_mismatch":             {},
-	"off_topic":                   {},
-	"critic_uncertain":            {},
+	"hedging":          {},
+	"off_topic":        {},
+	"critic_uncertain": {},
 }
 
 // criticIssues invokes the reply critic (when configured) and returns the

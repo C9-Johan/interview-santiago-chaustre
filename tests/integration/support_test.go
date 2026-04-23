@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net"
 	nethttp "net/http"
 	"net/http/httptest"
 	"os"
@@ -45,7 +46,6 @@ import (
 
 const (
 	webhookSecret     = "whsec_integration_test"
-	mockoonPort       = 3001
 	mockoonStartupTTL = 10 * time.Second
 	defaultListingID  = "L1"
 )
@@ -78,7 +78,7 @@ func startMockoon(t *testing.T) *mockoonServer {
 	if err != nil {
 		t.Fatalf("create mockoon log: %v", err)
 	}
-	port := strconv.Itoa(mockoonPort)
+	port := strconv.Itoa(freeTCPPort(t))
 	cmd := exec.Command(
 		"mockoon-cli", "start", "-d", envPath, "--port", port, "--log-transaction",
 	)
@@ -96,6 +96,20 @@ func startMockoon(t *testing.T) *mockoonServer {
 	t.Cleanup(srv.stop)
 	waitForHealthy(t, srv.baseURL+"/listings/"+defaultListingID, mockoonStartupTTL)
 	return srv
+}
+
+func freeTCPPort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve tcp port: %v", err)
+	}
+	defer ln.Close()
+	addr, ok := ln.Addr().(*net.TCPAddr)
+	if !ok {
+		t.Fatalf("unexpected addr type: %T", ln.Addr())
+	}
+	return addr.Port
 }
 
 func (s *mockoonServer) stop() {
@@ -306,6 +320,7 @@ func bootService(
 	idempotency := memstore.NewIdempotency()
 	memory := memstore.NewConversationMemory()
 	classes := &nopClassifications{}
+	replies := newMemReplies()
 	escRing := memstore.NewEscalationRing(100, nil)
 	toggles := togglesource.New(domain.Toggles{AutoResponseEnabled: true}, nil, nil)
 
@@ -317,6 +332,7 @@ func bootService(
 		Escalations:     escRing,
 		Memory:          memory,
 		Classifications: classes,
+		Replies:         replies,
 		Toggles:         toggles,
 		Thresholds:      decide.Thresholds{ClassifierMin: 0.65, GeneratorMin: 0.70},
 		Log:             log,
@@ -368,6 +384,32 @@ func bootService(
 // log.
 type nopClassifications struct {
 	puts atomic.Int32
+}
+
+type memReplies struct {
+	mu   sync.Mutex
+	byID map[string]domain.Reply
+}
+
+func newMemReplies() *memReplies {
+	return &memReplies{byID: map[string]domain.Reply{}}
+}
+
+func (s *memReplies) Put(_ context.Context, postID string, r domain.Reply) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.byID[postID] = r
+	return nil
+}
+
+func (s *memReplies) Get(_ context.Context, postID string) (domain.Reply, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.byID[postID]
+	if !ok {
+		return domain.Reply{}, os.ErrNotExist
+	}
+	return r, nil
 }
 
 func (s *nopClassifications) Put(_ context.Context, _ string, _ domain.Classification) error {
@@ -450,6 +492,21 @@ func waitForSendMessage(t *testing.T, logPath string, timeout time.Duration) str
 	dumpLog(t, logPath)
 	t.Fatalf("no send-message POST observed within %s", timeout)
 	return ""
+}
+
+// waitForSendMessageCount blocks until Mockoon logs at least want POST calls
+// to /communication/conversations/*/send-message, or fails on timeout.
+func waitForSendMessageCount(t *testing.T, logPath string, want int, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if countSendMessage(t, logPath) >= want {
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	dumpLog(t, logPath)
+	t.Fatalf("send-message count never reached %d within %s", want, timeout)
 }
 
 // countSendMessage reports how many POST …/send-message transactions have

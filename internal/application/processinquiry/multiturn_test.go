@@ -125,7 +125,7 @@ func TestEscalatedReplyDoesNotPoisonMemory(t *testing.T) {
 		MemoryLimits:    processinquiry.MemoryLimits{Cap: 50, Keep: 20},
 		Thresholds:      decide.Thresholds{ClassifierMin: 0.65, GeneratorMin: 0.70},
 		Log:             discardLogger(),
-		Critic:          &fakeCritic{verdict: failVerdict("intent_mismatch")},
+		Critic:          &fakeCritic{verdict: failVerdict("critic_uncertain")},
 	}
 	deps.Classifier = mustClassifier(t,
 		`{"primary_code":"Y6","confidence":0.9,"extracted_entities":{"check_in":"2026-04-24","check_out":"2026-04-26","guest_count":4},"risk_flag":false,"next_action":"generate_reply","reasoning":"dates"}`,

@@ -53,6 +53,7 @@ type WebhookConvMeta struct {
 // WebhookReservationMeta is one entry in conversation.meta.reservations.
 type WebhookReservationMeta struct {
 	ID               string    `json:"_id"`
+	ListingID        string    `json:"listingId"`
 	CheckIn          time.Time `json:"checkIn"`
 	CheckOut         time.Time `json:"checkOut"`
 	ConfirmationCode string    `json:"confirmationCode"`

@@ -29,6 +29,7 @@ const minFixture = `{
       "guestName": "Sarah",
       "reservations": [{
         "_id": "res_test_001",
+        "listingId": "L1",
         "checkIn":  "2026-04-24T22:00:00.000Z",
         "checkOut": "2026-04-26T16:00:00.000Z",
         "confirmationCode": "TESTCODE1"
@@ -70,6 +71,9 @@ func TestToDomainMinimalFixture(t *testing.T) {
 	}
 	if len(conv.Reservations) != 1 || conv.Reservations[0].ConfirmationCode != "TESTCODE1" {
 		t.Fatalf("reservations: %+v", conv.Reservations)
+	}
+	if conv.Reservations[0].ListingID != "L1" {
+		t.Fatalf("listing id: %q", conv.Reservations[0].ListingID)
 	}
 	if !conv.Reservations[0].CheckIn.Equal(time.Date(2026, 4, 24, 22, 0, 0, 0, time.UTC)) {
 		t.Fatalf("check in: %v", conv.Reservations[0].CheckIn)

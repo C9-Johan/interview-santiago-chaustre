@@ -37,6 +37,7 @@ func reservationsFromDTO(in []WebhookReservationMeta) []domain.Reservation {
 	for i := range in {
 		out = append(out, domain.Reservation{
 			ID:               in[i].ID,
+			ListingID:        in[i].ListingID,
 			CheckIn:          in[i].CheckIn,
 			CheckOut:         in[i].CheckOut,
 			ConfirmationCode: in[i].ConfirmationCode,

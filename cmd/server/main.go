@@ -449,8 +449,8 @@ func hostAlreadyReplied(conv domain.Conversation, t domain.Turn) bool {
 }
 
 func resolveListingID(conv domain.Conversation) string {
-	if len(conv.Reservations) > 0 && conv.Reservations[0].ID != "" {
-		return conv.Reservations[0].ID
+	if len(conv.Reservations) > 0 && conv.Reservations[0].ListingID != "" {
+		return conv.Reservations[0].ListingID
 	}
 	return defaultListingID
 }

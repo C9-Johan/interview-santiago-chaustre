@@ -75,7 +75,7 @@ func (u *UseCase) Generate(ctx context.Context, in Input) (domain.Reply, error) 
 			return parseFinal(msg.Content, toolLog)
 		}
 		for _, tc := range msg.ToolCalls {
-			rec := runTool(ctx, u.guesty, tc)
+			rec := runTool(ctx, u.guesty, tc, in.ListingID)
 			toolLog = append(toolLog, rec)
 			messages = append(messages, openai.ChatCompletionMessage{
 				Role:       openai.ChatMessageRoleTool,

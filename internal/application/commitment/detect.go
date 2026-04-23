@@ -38,6 +38,9 @@ var offerPhrases = []string{
 	"place a hold",
 	"block the calendar",
 	"lock it in",
+	"lock these dates in",
+	"lock the dates in",
+	"lock these in",
 	"i'll hold",
 	"i can hold",
 	"let me hold",
@@ -73,6 +76,39 @@ var affirmativePhrases = []string{
 	"that works",
 }
 
+// deferPhrases are signals that the guest is not accepting the reservation
+// action yet. These turns should keep flowing through the normal classifier so
+// the bot can answer follow-up questions instead of forcing a handoff.
+var deferPhrases = []string{
+	"for now",
+	"not yet",
+	"before",
+	"first",
+	"question",
+	"questions",
+	"instead",
+	"later",
+	"after",
+	"until",
+}
+
+// finalizationPhrases capture explicit requests to complete booking, not just
+// place/keep a hold. These should route to a human once a hold already exists.
+var finalizationPhrases = []string{
+	"lock it in",
+	"lock them in",
+	"lock that",
+	"book it",
+	"book them",
+	"confirm booking",
+	"confirm the booking",
+	"reserve it",
+	"reserve them",
+	"finalize",
+	"proceed",
+	"go ahead and book",
+}
+
 // Detect returns Ok=true when priorHostBody contains any offer phrase AND
 // guestBody is a short affirmative. Matching is case-insensitive and
 // whitespace-normalized. Returns the matched offer and reply verbatim so the
@@ -99,19 +135,59 @@ func Detect(priorHostBody, guestBody string) Result {
 	}
 }
 
+// WantsFinalization returns true when guestBody explicitly asks to complete a
+// booking/lock-in action (not just discuss details). Matching is
+// case-insensitive and whitespace-normalized.
+func WantsFinalization(guestBody string) bool {
+	normalizedGuest := normalize(guestBody)
+	if normalizedGuest == "" || len(normalizedGuest) > MaxAffirmativeLen {
+		return false
+	}
+	if matchFirst(normalizedGuest, deferPhrases) != "" {
+		return false
+	}
+	if matchFirst(normalizedGuest, finalizationPhrases) != "" {
+		return true
+	}
+	return false
+}
+
 // matchAffirmative returns the matched phrase, or the input itself when it is
 // a bare "yes" / "yeah" / "ok" style confirmation. We treat the short-bare
 // case as a match because otherwise the "yes please do that for me" on the
 // Soho scenario fails a substring check against "yes please".
 func matchAffirmative(normalizedGuest string) string {
+	if matchFirst(normalizedGuest, deferPhrases) != "" {
+		return ""
+	}
 	if phrase := matchFirst(normalizedGuest, affirmativePhrases); phrase != "" {
 		return phrase
 	}
-	switch normalizedGuest {
+	trimmed := trimTerminalPunctuation(normalizedGuest)
+	switch leadingToken(trimmed) {
 	case "yes", "yeah", "yep", "yup", "ok", "okay", "k":
-		return normalizedGuest
+		return leadingToken(trimmed)
 	}
 	return ""
+}
+
+func trimTerminalPunctuation(s string) string {
+	trimmed := strings.TrimSpace(s)
+	if trimmed == "" {
+		return ""
+	}
+	return strings.TrimRight(trimmed, "!?.;,:")
+}
+
+func leadingToken(s string) string {
+	if s == "" {
+		return ""
+	}
+	parts := strings.Fields(s)
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Trim(parts[0], "!?.;,:")
 }
 
 // matchFirst returns the first phrase in phrases that is a substring of hay,
