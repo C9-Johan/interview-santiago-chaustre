@@ -13,6 +13,8 @@ const (
 	StageClassifier Stage = "classifier"
 	StageGenerator  Stage = "generator"
 	StageCritic     Stage = "critic"
+	StageQualifier  Stage = "qualifier"
+	StageSummarizer Stage = "summarizer"
 )
 
 type stageKey struct{}

@@ -102,10 +102,10 @@ func TestMissingSlots(t *testing.T) {
 	hint := "Soho 2BR"
 
 	cases := []struct {
-		name    string
-		entity  domain.ExtractedEntities
-		empty   bool
-		want    []string
+		name   string
+		entity domain.ExtractedEntities
+		empty  bool
+		want   []string
 	}{
 		{"nothing known (first contact)", domain.ExtractedEntities{}, true, []string{"dates", "guests", "listing"}},
 		{"only dates known", domain.ExtractedEntities{CheckIn: &checkIn, CheckOut: &checkOut}, true, []string{"guests", "listing"}},

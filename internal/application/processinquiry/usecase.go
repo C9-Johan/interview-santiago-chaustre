@@ -11,6 +11,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/chaustre/inquiryiq/internal/application/classify"
+	"github.com/chaustre/inquiryiq/internal/application/commitment"
 	"github.com/chaustre/inquiryiq/internal/application/decide"
 	"github.com/chaustre/inquiryiq/internal/application/generatereply"
 	"github.com/chaustre/inquiryiq/internal/application/promptsafety"
@@ -73,6 +74,30 @@ type eventPublisher interface {
 	Publish(ctx context.Context, topic string, payload any)
 }
 
+// summarizer compresses the oldest N entries of a memory thread into a rolled
+// summary string. Satisfied by *summarize.UseCase; when nil the orchestrator
+// falls back to simple truncation so tests and bare deployments still work.
+type summarizer interface {
+	Summarize(ctx context.Context, in SummarizeInput) (string, error)
+}
+
+// SummarizeInput is the payload the orchestrator hands to the summarizer.
+// Kept local so processinquiry can declare the contract without importing the
+// summarize package (avoids the cyclic dep with the wiring layer).
+type SummarizeInput struct {
+	ExistingSummary string
+	OlderEntries    []domain.Message
+	Now             time.Time
+}
+
+// MemoryLimits bounds the per-conversation thread. When len(Thread) exceeds
+// Cap the orchestrator folds (len(Thread)-Keep) oldest entries into
+// LastSummary and keeps the remaining Keep entries verbatim.
+type MemoryLimits struct {
+	Cap  int
+	Keep int
+}
+
 // StaticToggles is the test/config-driven adapter that always returns the same
 // domain.Toggles value. Production wiring uses togglesource.Source instead so
 // the admin kill-switch can flip state at runtime.
@@ -100,6 +125,8 @@ type Deps struct {
 	Critic          replyCritic
 	Toggles         togglesProvider
 	Events          eventPublisher
+	Summarizer      summarizer
+	MemoryLimits    MemoryLimits
 	Thresholds      decide.Thresholds
 	Log             *slog.Logger
 }
@@ -145,6 +172,9 @@ func (u *UseCase) Run(ctx context.Context, in Input) {
 		return
 	}
 	prior := u.priorContext(ctx, in)
+	if u.commitmentHandoff(ctx, in, prior) {
+		return
+	}
 	cls, ok := u.classifyOrEscalate(ctx, in, prior)
 	if !ok {
 		return
@@ -156,6 +186,12 @@ func (u *UseCase) Run(ctx context.Context, in Input) {
 		attribute.Float64("classification.confidence", cls.Confidence),
 	)
 	if cls.PrimaryCode == domain.X1 && u.d.Qualifier != nil {
+		if qualifierSaturated(prior.KnownEntities) {
+			span.SetAttributes(attribute.String("decision.pre_generate", "qualifier_saturated"))
+			u.recordEscalation(ctx, in, cls, nil, domain.Decision{Reason: "qualifier_saturated"})
+			u.closeTurn(ctx, in, cls, nil, false)
+			return
+		}
 		u.qualifyAndSend(ctx, in, cls, prior)
 		return
 	}
@@ -163,7 +199,7 @@ func (u *UseCase) Run(ctx context.Context, in Input) {
 	if !gate1.AutoSend {
 		span.SetAttributes(attribute.String("decision.pre_generate", gate1.Reason))
 		u.recordEscalation(ctx, in, cls, nil, gate1)
-		u.closeTurn(ctx, in, cls, nil)
+		u.closeTurn(ctx, in, cls, nil, false)
 		return
 	}
 	reply, ok := u.generateOrEscalate(ctx, in, cls, prior)
@@ -190,7 +226,7 @@ func (u *UseCase) qualifyAndSend(ctx context.Context, in Input, cls domain.Class
 	// Respect the operator kill-switch just like every other auto-send path.
 	if !u.d.Toggles.Current().AutoResponseEnabled {
 		u.recordEscalation(ctx, in, cls, nil, domain.Decision{Reason: "auto_disabled"})
-		u.closeTurn(ctx, in, cls, nil)
+		u.closeTurn(ctx, in, cls, nil, false)
 		return
 	}
 
@@ -226,7 +262,7 @@ func (u *UseCase) qualifyAndSend(ctx context.Context, in Input, cls domain.Class
 	)
 	if !final.AutoSend {
 		u.recordEscalation(ctx, in, cls, &reply, final)
-		u.closeTurn(ctx, in, cls, &reply)
+		u.closeTurn(ctx, in, cls, &reply, false)
 		return
 	}
 	if err := u.d.Guesty.PostNote(ctx, in.Conversation.RawID, reply.Body); err != nil {
@@ -235,11 +271,11 @@ func (u *UseCase) qualifyAndSend(ctx context.Context, in Input, cls domain.Class
 			Reason: "post_note_failed",
 			Detail: []string{err.Error()},
 		})
-		u.closeTurn(ctx, in, cls, &reply)
+		u.closeTurn(ctx, in, cls, &reply, false)
 		return
 	}
 	u.markManaged(ctx, in, cls)
-	u.closeTurn(ctx, in, cls, &reply)
+	u.closeTurn(ctx, in, cls, &reply, true)
 }
 
 func (u *UseCase) gateAndSend(ctx context.Context, in Input, cls domain.Classification, reply domain.Reply) {
@@ -254,7 +290,7 @@ func (u *UseCase) gateAndSend(ctx context.Context, in Input, cls domain.Classifi
 	)
 	if !final.AutoSend {
 		u.recordEscalation(ctx, in, cls, &reply, final)
-		u.closeTurn(ctx, in, cls, &reply)
+		u.closeTurn(ctx, in, cls, &reply, false)
 		return
 	}
 	if err := u.d.Guesty.PostNote(ctx, in.Conversation.RawID, reply.Body); err != nil {
@@ -263,11 +299,11 @@ func (u *UseCase) gateAndSend(ctx context.Context, in Input, cls domain.Classifi
 			Reason: "post_note_failed",
 			Detail: []string{err.Error()},
 		})
-		u.closeTurn(ctx, in, cls, &reply)
+		u.closeTurn(ctx, in, cls, &reply, false)
 		return
 	}
 	u.markManaged(ctx, in, cls)
-	u.closeTurn(ctx, in, cls, &reply)
+	u.closeTurn(ctx, in, cls, &reply, true)
 }
 
 func (u *UseCase) markManaged(ctx context.Context, in Input, cls domain.Classification) {
@@ -299,6 +335,11 @@ func firstReservationID(c domain.Conversation) string {
 	return c.Reservations[0].ID
 }
 
+// priorContext reads the memory record as the authoritative thread source and
+// merges in any webhook-thread entries we haven't seen yet (e.g. host replied
+// manually outside the bot). memory-first — not webhook-first — so the
+// orchestrator keeps context even when Guesty's thread view drops an internal
+// note or the tester UI sends an empty thread.
 func (u *UseCase) priorContext(ctx context.Context, in Input) domain.PriorContext {
 	rec, _ := u.d.Memory.Get(ctx, in.Turn.Key)
 	profile := ""
@@ -311,19 +352,111 @@ func (u *UseCase) priorContext(ctx context.Context, in Input) domain.PriorContex
 	return domain.PriorContext{
 		Summary:       rec.LastSummary,
 		KnownEntities: rec.KnownEntities,
-		Thread:        in.Conversation.Thread,
+		Thread:        mergeThread(rec.Thread, in.Conversation.Thread, in.Turn.Messages),
 		GuestProfile:  profile,
 	}
 }
 
+// commitmentHandoff runs the deterministic commitment detector before any
+// LLM call. When the prior host turn offered an action the system cannot
+// fulfil (hold dates, reserve, book for you) AND the current guest turn is
+// a short affirmative, we escalate to a human regardless of classifier or
+// generator output. This is the safety net behind the generator prompt — a
+// prompt regression cannot produce a fabricated second commitment because
+// this guard fires first. Returns true when the turn was handled.
+func (u *UseCase) commitmentHandoff(ctx context.Context, in Input, prior domain.PriorContext) bool {
+	latestHost := latestHostBody(prior.Thread)
+	if latestHost == "" {
+		return false
+	}
+	guestBody := lastGuestBody(in.Turn)
+	if guestBody == "" {
+		return false
+	}
+	match := commitment.Detect(latestHost, guestBody)
+	if !match.Ok {
+		return false
+	}
+	u.recordEscalation(ctx, in, domain.Classification{}, nil, domain.Decision{
+		Reason: match.EscalationTag,
+		Detail: []string{
+			"matched_offer=" + match.MatchedOffer,
+			"matched_reply=" + match.MatchedReply,
+		},
+	})
+	u.closeTurn(ctx, in, domain.Classification{}, nil, false)
+	return true
+}
+
+func latestHostBody(thread []domain.Message) string {
+	for i := len(thread) - 1; i >= 0; i-- {
+		if thread[i].Role == domain.RoleHost {
+			return thread[i].Body
+		}
+	}
+	return ""
+}
+
+func lastGuestBody(t domain.Turn) string {
+	if len(t.Messages) == 0 {
+		return ""
+	}
+	return t.Messages[len(t.Messages)-1].Body
+}
+
+// qualifierSaturated returns true when the bot already knows the three
+// booking-critical entities (check-in, check-out, guest count) for this
+// conversation. Asking a qualifier once more would just loop the guest on
+// information we already have, so the orchestrator escalates instead.
+func qualifierSaturated(e domain.ExtractedEntities) bool {
+	return e.CheckIn != nil && e.CheckOut != nil && e.GuestCount != nil
+}
+
+// mergeThread layers webhook-thread entries on top of the memory-stored
+// thread, deduplicating by PostID. Messages already present in the current
+// Turn are filtered out so the classifier sees them exactly once (in the
+// guest_turn envelope, not prior_thread).
+func mergeThread(memory, webhook, currentTurn []domain.Message) []domain.Message {
+	turnIDs := make(map[string]struct{}, len(currentTurn))
+	for i := range currentTurn {
+		if currentTurn[i].PostID != "" {
+			turnIDs[currentTurn[i].PostID] = struct{}{}
+		}
+	}
+	out := make([]domain.Message, 0, len(memory)+len(webhook))
+	seen := make(map[string]struct{}, len(memory)+len(webhook))
+	appendIfNew := func(m domain.Message) {
+		if m.PostID != "" {
+			if _, dup := seen[m.PostID]; dup {
+				return
+			}
+			if _, inTurn := turnIDs[m.PostID]; inTurn {
+				return
+			}
+			seen[m.PostID] = struct{}{}
+		}
+		out = append(out, m)
+	}
+	for i := range memory {
+		appendIfNew(memory[i])
+	}
+	for i := range webhook {
+		appendIfNew(webhook[i])
+	}
+	return out
+}
+
 // criticBlockerTags is the set of critic issue tags that fail the auto-send
-// gate. Other tags (e.g. missing_beat_*, too_short, generic_intro) are
-// advisory: the generator already self-reports closer_beats and the length
-// validator already runs, and small models report a lot of false positives
-// on those purely stylistic checks. Safety tags (restricted_*, hedging,
-// factual_unsupported) and intent-alignment stay as hard blockers.
+// gate. Other tags (missing_beat_*, too_short, generic_intro,
+// factual_unsupported) are advisory: small models report a lot of false
+// positives on subjective quality checks, and the deterministic Go gates
+// already enforce the real fabrication risks — sell_certainty must pair
+// with check_availability (decide.ValidateReply), and uncovered hold /
+// out-of-band channel commitments are caught by uncovered_commitment_*
+// patterns. The critic-LLM second-guessing a tool-grounded reply is signal
+// for observability, not a hard kill switch. Safety tags (restricted_*,
+// hedging, intent-alignment, critic_uncertain) stay as blockers.
 var criticBlockerTags = map[string]struct{}{
-	"factual_unsupported":         {},
 	"hedging":                     {},
 	"restricted_payment":          {},
 	"restricted_address":          {},
@@ -416,7 +549,7 @@ func (u *UseCase) shortCircuitKillSwitch(ctx context.Context, in Input) bool {
 	u.recordEscalation(ctx, in, domain.Classification{}, nil, domain.Decision{
 		Reason: "auto_disabled",
 	})
-	u.closeTurn(ctx, in, domain.Classification{}, nil)
+	u.closeTurn(ctx, in, domain.Classification{}, nil, false)
 	return true
 }
 
@@ -569,9 +702,14 @@ func (u *UseCase) publishEscalation(ctx context.Context, e domain.Escalation) {
 	})
 }
 
-func (u *UseCase) closeTurn(ctx context.Context, in Input, cls domain.Classification, reply *domain.Reply) {
+// closeTurn flushes the just-handled turn to durable storage. sent must be
+// true only when the reply was actually posted to Guesty (PostNote returned
+// nil); every escalation, validator/critic rejection, and post-note failure
+// passes false. The flag drives whether the bot reply joins the memory
+// thread and which timestamp gets stamped — see applyMemoryUpdate.
+func (u *UseCase) closeTurn(ctx context.Context, in Input, cls domain.Classification, reply *domain.Reply, sent bool) {
 	err := u.d.Memory.Update(ctx, in.Turn.Key, func(r *domain.ConversationMemoryRecord) {
-		applyMemoryUpdate(r, in, cls, reply)
+		u.applyMemoryUpdate(ctx, r, in, cls, reply, sent)
 	})
 	if err != nil {
 		u.logErr(ctx, "memory_update_failed", err)
@@ -581,7 +719,23 @@ func (u *UseCase) closeTurn(ctx context.Context, in Input, cls domain.Classifica
 	}
 }
 
-func applyMemoryUpdate(r *domain.ConversationMemoryRecord, in Input, cls domain.Classification, reply *domain.Reply) {
+// applyMemoryUpdate writes everything worth remembering from the just-closed
+// turn into the persistent record: the guest messages, the bot reply (only
+// when it was actually posted to Guesty), the merged entities, and the
+// classification + timestamp bookkeeping. The host-message append is gated
+// on sent — not on reply presence — because rejected replies (critic,
+// validator, post-note failure) never reached the guest, and including them
+// in the thread would make the next turn's classifier hallucinate a closed
+// exchange. Thread is capped via foldOverflow so unbounded conversations
+// don't turn the memory store into a data lake.
+func (u *UseCase) applyMemoryUpdate(
+	ctx context.Context,
+	r *domain.ConversationMemoryRecord,
+	in Input,
+	cls domain.Classification,
+	reply *domain.Reply,
+	sent bool,
+) {
 	r.ConversationKey = in.Turn.Key
 	if in.Conversation.GuestID != "" {
 		r.GuestID = in.Conversation.GuestID
@@ -589,18 +743,72 @@ func applyMemoryUpdate(r *domain.ConversationMemoryRecord, in Input, cls domain.
 	if in.Conversation.Integration.Platform != "" {
 		r.Platform = in.Conversation.Integration.Platform
 	}
+	for i := range in.Turn.Messages {
+		r.AppendMessage(in.Turn.Messages[i])
+	}
+	if sent && reply != nil {
+		r.AppendMessage(domain.Message{
+			PostID:    "bot_" + in.Turn.LastPostID,
+			Body:      reply.Body,
+			CreatedAt: in.Now,
+			Role:      domain.RoleHost,
+		})
+	}
 	if cls.PrimaryCode != "" {
+		r.KnownEntities = domain.MergeEntities(r.KnownEntities, cls.ExtractedEntities)
 		copied := cls
 		r.LastClassification = &copied
 	}
 	now := in.Now
-	if reply != nil && reply.AbortReason == "" {
+	if sent {
 		r.LastAutoSendAt = &now
-	}
-	if reply == nil || reply.AbortReason != "" {
+	} else {
 		r.LastEscalationAt = &now
 	}
+	u.foldOverflow(ctx, r, now)
 	r.UpdatedAt = now
+}
+
+// foldOverflow collapses older thread entries into r.LastSummary when the
+// thread exceeds the configured cap. When no summarizer is wired we degrade
+// to plain truncation — the rolling summary is a nice-to-have, unbounded
+// growth is not. Callers must set r.UpdatedAt after foldOverflow returns.
+func (u *UseCase) foldOverflow(ctx context.Context, r *domain.ConversationMemoryRecord, now time.Time) {
+	limit := u.d.MemoryLimits.Cap
+	keep := u.d.MemoryLimits.Keep
+	if limit <= 0 || keep <= 0 || len(r.Thread) <= limit {
+		return
+	}
+	split := len(r.Thread) - keep
+	if split <= 0 {
+		return
+	}
+	older := r.Thread[:split]
+	if u.d.Summarizer == nil {
+		if u.d.Log != nil {
+			u.d.Log.WarnContext(ctx, "memory_thread_truncated_no_summarizer",
+				slog.Int("dropped", split),
+				slog.String("conversation_key", string(r.ConversationKey)),
+			)
+		}
+		r.Thread = append([]domain.Message(nil), r.Thread[split:]...)
+		return
+	}
+	summary, err := u.d.Summarizer.Summarize(ctx, SummarizeInput{
+		ExistingSummary: r.LastSummary,
+		OlderEntries:    older,
+		Now:             now,
+	})
+	if err != nil {
+		u.logErr(ctx, "memory_summary_failed", err)
+		r.Thread = append([]domain.Message(nil), r.Thread[split:]...)
+		return
+	}
+	r.LastSummary = summary
+	if split > 0 {
+		r.LastSummaryPostID = older[len(older)-1].PostID
+	}
+	r.Thread = append([]domain.Message(nil), r.Thread[split:]...)
 }
 
 func (u *UseCase) logErr(ctx context.Context, msg string, err error) {

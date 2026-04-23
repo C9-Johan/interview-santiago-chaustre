@@ -57,6 +57,25 @@ func (r *EscalationRing) Record(ctx context.Context, e domain.Escalation) error 
 	return nil
 }
 
+// Reset clears the in-memory ring and forwards to the durable child if it
+// implements Reset. Used by the demo Reset endpoint so /escalations starts
+// empty again without bouncing the process.
+func (r *EscalationRing) Reset(ctx context.Context) error {
+	if r.durable != nil {
+		if rs, ok := r.durable.(interface {
+			Reset(context.Context) error
+		}); ok {
+			if err := rs.Reset(ctx); err != nil {
+				return err
+			}
+		}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.buf = r.buf[:0]
+	return nil
+}
+
 // List returns the last limit escalations, newest first. A limit of zero or
 // a limit greater than the ring size returns the full ring.
 func (r *EscalationRing) List(_ context.Context, limit int) ([]domain.Escalation, error) {

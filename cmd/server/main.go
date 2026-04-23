@@ -22,9 +22,10 @@ import (
 	"github.com/chaustre/inquiryiq/internal/application/decide"
 	"github.com/chaustre/inquiryiq/internal/application/dispatch"
 	"github.com/chaustre/inquiryiq/internal/application/generatereply"
-	"github.com/chaustre/inquiryiq/internal/application/qualifyreply"
 	"github.com/chaustre/inquiryiq/internal/application/processinquiry"
+	"github.com/chaustre/inquiryiq/internal/application/qualifyreply"
 	"github.com/chaustre/inquiryiq/internal/application/reviewreply"
+	"github.com/chaustre/inquiryiq/internal/application/summarize"
 	"github.com/chaustre/inquiryiq/internal/application/trackconversion"
 	"github.com/chaustre/inquiryiq/internal/domain"
 	"github.com/chaustre/inquiryiq/internal/domain/repository"
@@ -152,32 +153,7 @@ func buildApp(ctx context.Context, cfg *config.Config, log *slog.Logger, tel *te
 	}
 
 	tracker := trackconversion.New(stores.Conversions, telemetry.NewConversionRecorder(tel.Counters()), log)
-
-	// Assign the qualifier via a concrete nil check so the orchestrator's
-	// `Qualifier != nil` guard sees a true nil interface when the feature
-	// flag is off — assigning a typed-nil *qualifyreply.UseCase directly
-	// would fail that check and panic on first X1 turn.
-	deps := processinquiry.Deps{
-		Classifier:      useCases.classifier,
-		Generator:       useCases.generator,
-		Guesty:          gclient,
-		Idempotency:     stores.Idempotency,
-		Escalations:     stores.Escalations,
-		Memory:          stores.Memory,
-		Classifications: stores.Classifications,
-		Replies:         stores.Replies,
-		Conversions:     tracker,
-		Confidence:      telemetry.NewConfidenceRecorder(tel.Histograms()),
-		Critic:          useCases.critic,
-		Toggles:         toggles,
-		Events:          bus,
-		Thresholds:      decide.Thresholds{ClassifierMin: cfg.ClassifierMinConf, GeneratorMin: cfg.GeneratorMinConf},
-		Log:             log,
-	}
-	if useCases.qualifier != nil {
-		deps.Qualifier = useCases.qualifier
-	}
-	orch := processinquiry.New(deps)
+	orch := processinquiry.New(buildOrchDeps(cfg, stores, useCases, gclient, toggles, bus, tel, tracker, log))
 
 	pool := dispatch.New(dispatch.Config{
 		Workers:      cfg.DispatchWorkers,
@@ -216,6 +192,7 @@ func buildApp(ctx context.Context, cfg *config.Config, log *slog.Logger, tel *te
 		Classifications: stores.Classifications,
 		Replies:         stores.Replies,
 		Escalations:     stores.Escalations,
+		Reset:           stores,
 		Token:           cfg.AdminToken,
 		Log:             log,
 	}
@@ -296,6 +273,7 @@ type useCaseBundle struct {
 	generator  *generatereply.UseCase
 	critic     *reviewreply.UseCase
 	qualifier  *qualifyreply.UseCase
+	summarizer *summarize.UseCase
 }
 
 // buildBudgetWatcher assembles the cost accountant that rides in front of
@@ -325,6 +303,50 @@ func buildBudgetWatcher(
 	)
 }
 
+// buildOrchDeps assembles processinquiry.Deps from the already-constructed
+// use cases, stores, and infrastructure collaborators. Extracted out of
+// buildApp to keep that function under the funlen gate while keeping the
+// Deps literal readable in one place.
+func buildOrchDeps(
+	cfg *config.Config,
+	stores *store.Bundle,
+	useCases useCaseBundle,
+	gclient repository.GuestyClient,
+	toggles *togglesource.Source,
+	bus *eventbus.Bus,
+	tel *telemetry.Provider,
+	tracker *trackconversion.UseCase,
+	log *slog.Logger,
+) processinquiry.Deps {
+	// Assign the qualifier via a concrete nil check so the orchestrator's
+	// `Qualifier != nil` guard sees a true nil interface when the feature
+	// flag is off — assigning a typed-nil *qualifyreply.UseCase directly
+	// would fail that check and panic on first X1 turn.
+	deps := processinquiry.Deps{
+		Classifier:      useCases.classifier,
+		Generator:       useCases.generator,
+		Guesty:          gclient,
+		Idempotency:     stores.Idempotency,
+		Escalations:     stores.Escalations,
+		Memory:          stores.Memory,
+		Classifications: stores.Classifications,
+		Replies:         stores.Replies,
+		Conversions:     tracker,
+		Confidence:      telemetry.NewConfidenceRecorder(tel.Histograms()),
+		Critic:          useCases.critic,
+		Toggles:         toggles,
+		Events:          bus,
+		Summarizer:      useCases.summarizer,
+		MemoryLimits:    processinquiry.MemoryLimits{Cap: cfg.MemoryThreadCap, Keep: cfg.MemoryThreadKeep},
+		Thresholds:      decide.Thresholds{ClassifierMin: cfg.ClassifierMinConf, GeneratorMin: cfg.GeneratorMinConf},
+		Log:             log,
+	}
+	if useCases.qualifier != nil {
+		deps.Qualifier = useCases.qualifier
+	}
+	return deps
+}
+
 func buildUseCases(llmClient *llm.Client, gclient repository.GuestyClient, cfg *config.Config) (useCaseBundle, error) {
 	classifier, err := classify.New(llmClient, cfg.ModelClassifier, cfg.ClassifierTimeout)
 	if err != nil {
@@ -339,7 +361,14 @@ func buildUseCases(llmClient *llm.Client, gclient repository.GuestyClient, cfg *
 	if cfg.X1AutoReplyEnabled {
 		qualifier = qualifyreply.New(llmClient, cfg.ModelGenerator, cfg.GeneratorTimeout)
 	}
-	return useCaseBundle{classifier: classifier, generator: generator, critic: critic, qualifier: qualifier}, nil
+	summarizer := summarize.New(llmClient, cfg.ModelClassifier, cfg.ClassifierTimeout)
+	return useCaseBundle{
+		classifier: classifier,
+		generator:  generator,
+		critic:     critic,
+		qualifier:  qualifier,
+		summarizer: summarizer,
+	}, nil
 }
 
 // enqueueFlushFn is the debouncer-facing flush callback. Instead of running

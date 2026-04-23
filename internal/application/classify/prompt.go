@@ -35,6 +35,17 @@ Example: "any discount? also is parking included?" -> primary R1, secondary Y1.
 # Default bias
 If ambiguous, pick GRAY (X1) or the weaker YELLOW. Never promote to GREEN without explicit high-intent language.
 
+# X1 vs everything else (CRITICAL — most common error)
+X1 only applies when the ENTIRE turn is empty of routable signal — a bare "Hi", an emoji, "interested in your place", "looking around". A leading greeting ("Hi!", "Hello,", "Hey there —") followed by a real question is NOT X1. Classify the question.
+
+Specifically:
+- Specific dates + "available"/"open"/"free"/"vacant" -> Y6 (availability), confidence ≥ 0.80.
+- Specific dates + guest count + listing reference, no other concern -> Y6.
+- A question about parking, check-in time, pets, beds, or fees with a polite intro -> the matching Y code, never X1.
+- "Hi! Is the Soho 2BR available Fri April 24 – Sun April 26 for 4 adults?" -> Y6, confidence 0.85, reasoning "explicit availability question with dates and guest count".
+
+Use X1 only when you cannot identify ANY blocking concern. Extracted entities are evidence the message is NOT X1: if check_in/check_out/guest_count/pets/listing_hint are populated from the current turn, the primary code must be the matching Y code.
+
 # Confidence calibration
 0.90-1.00 unmistakable single-signal ("book it for the 24th")
 0.70-0.89 clear primary, minor noise

@@ -54,6 +54,16 @@ func (stubGuesty) GetConversation(_ context.Context, _ string) (domain.Conversat
 
 func (stubGuesty) PostNote(_ context.Context, _, _ string) error { return nil }
 
+func (stubGuesty) CreateReservation(_ context.Context, in domain.ReservationHoldInput) (domain.ReservationHoldResult, error) {
+	return domain.ReservationHoldResult{
+		ID:               "res_stub_" + in.ListingID,
+		Status:           in.Status,
+		CheckIn:          in.CheckIn,
+		CheckOut:         in.CheckOut,
+		ConfirmationCode: "STUBHOLD",
+	}, nil
+}
+
 func finalReplyJSON(t *testing.T) string {
 	t.Helper()
 	b, err := json.Marshal(domain.Reply{
@@ -107,6 +117,63 @@ func TestGenerateHappyPath(t *testing.T) {
 	if r.UsedTools[0].LatencyMs < 0 {
 		t.Fatalf("negative latency: %d", r.UsedTools[0].LatencyMs)
 	}
+}
+
+func TestGenerateHoldReservationTool(t *testing.T) {
+	t.Parallel()
+	s := &scriptedLLM{steps: []openai.ChatCompletionResponse{
+		{Choices: []openai.ChatCompletionChoice{{Message: openai.ChatCompletionMessage{
+			ToolCalls: []openai.ToolCall{
+				toolCall("c1", "check_availability", `{"listing_id":"L1","from":"2026-04-24","to":"2026-04-26"}`),
+				toolCall("c2", "hold_reservation", `{"listing_id":"L1","check_in":"2026-04-24","check_out":"2026-04-26","guest_count":4,"status":"reserved"}`),
+			},
+		}}}},
+		{Choices: []openai.ChatCompletionChoice{{Message: openai.ChatCompletionMessage{Content: finalReplyJSON(t)}}}},
+	}}
+	u := generatereply.New(s, stubGuesty{}, "m", 5*time.Second, 4)
+	r, err := u.Generate(context.Background(), generatereply.Input{ListingID: "L1", Now: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var holds int
+	for i := range r.UsedTools {
+		if r.UsedTools[i].Name == "hold_reservation" {
+			holds++
+			if r.UsedTools[i].Error != "" {
+				t.Fatalf("hold_reservation should not error, got %q", r.UsedTools[i].Error)
+			}
+		}
+	}
+	if holds != 1 {
+		t.Fatalf("want exactly 1 hold_reservation call, got %d (tools: %+v)", holds, r.UsedTools)
+	}
+}
+
+func TestGenerateHoldReservationRejectsInvalidStatus(t *testing.T) {
+	t.Parallel()
+	s := &scriptedLLM{steps: []openai.ChatCompletionResponse{
+		{Choices: []openai.ChatCompletionChoice{{Message: openai.ChatCompletionMessage{
+			ToolCalls: []openai.ToolCall{
+				toolCall("c1", "hold_reservation", `{"listing_id":"L1","check_in":"2026-04-24","check_out":"2026-04-26","status":"confirmed"}`),
+			},
+		}}}},
+		{Choices: []openai.ChatCompletionChoice{{Message: openai.ChatCompletionMessage{Content: finalReplyJSON(t)}}}},
+	}}
+	u := generatereply.New(s, stubGuesty{}, "m", 5*time.Second, 4)
+	r, err := u.Generate(context.Background(), generatereply.Input{ListingID: "L1", Now: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range r.UsedTools {
+		if r.UsedTools[i].Name != "hold_reservation" {
+			continue
+		}
+		if r.UsedTools[i].Error == "" {
+			t.Fatalf("status=confirmed must be rejected by the dispatcher, got success: %+v", r.UsedTools[i])
+		}
+		return
+	}
+	t.Fatal("expected hold_reservation tool call to be recorded")
 }
 
 func TestGenerateParallelToolCalls(t *testing.T) {

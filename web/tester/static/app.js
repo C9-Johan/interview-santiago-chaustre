@@ -214,6 +214,42 @@ async function refreshTurnDetails(postID) {
   } catch (_) {}
 }
 
+// resetDemo wipes service-side and tester-side state so the next turn
+// starts fresh. The button is visible in the header toolbar; we confirm
+// before firing because this is destructive (drops conversation memory,
+// escalation queue, classifications, replies, idempotency claims, and
+// the tester's local logs).
+async function resetDemo() {
+  if (!confirm("Reset demo state?\n\nThis wipes conversations, escalations, memory, classifications, replies and idempotency on the service, plus the tester's local chat + tool-call log.")) {
+    return;
+  }
+  const btn = document.getElementById("reset-btn");
+  if (btn) { btn.disabled = true; btn.textContent = "Resetting…"; }
+  try {
+    const res = await fetch("/api/reset", { method: "POST" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      state.error = data.error || `reset failed (HTTP ${res.status})`;
+      return;
+    }
+    state.messages = [];
+    state.escalations = [];
+    state.selectedEscID = null;
+    state.selectedTimeline = [];
+    state.turnDetails = {};
+    state.openPanels = {};
+    state.bannerDismissed = false;
+    state.error = null;
+    state.lastStatus = null;
+    refreshConversation();
+    refreshEscalations();
+  } catch (e) {
+    state.error = e.message;
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Reset demo"; }
+  }
+}
+
 // Periodically re-poll any turn whose classification or reply is still
 // missing — the service's pipeline is async and the first fetch often
 // beats the pipeline.
@@ -256,6 +292,8 @@ function selectTab(name) {
 document.querySelectorAll(".tab").forEach(b => {
   b.addEventListener("click", () => selectTab(b.dataset.tab));
 });
+
+document.getElementById("reset-btn")?.addEventListener("click", resetDemo);
 
 // Live badge on the Agent tab — count of escalations awaiting review.
 function updateBadge() {

@@ -63,4 +63,8 @@ func writePriorMeta(b *strings.Builder, p domain.PriorContext) {
 	if p.Summary != "" {
 		fmt.Fprintf(b, "prior_thread_summary: %q\n", p.Summary)
 	}
+	if known := p.RenderKnownEntities(); known != "" {
+		b.WriteString("known_from_prior_turns:\n")
+		b.WriteString(known)
+	}
 }

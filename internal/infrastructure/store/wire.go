@@ -53,6 +53,33 @@ func Build(ctx context.Context, cfg *config.Config) (*Bundle, error) {
 	return b, nil
 }
 
+// Resetter is satisfied by stores that can wipe their state in-place. Used
+// by Bundle.Reset for the demo Reset endpoint; unsupported stores (mongo)
+// are silently skipped so a production deployment never loses durable data
+// because someone clicked the wrong button.
+type Resetter interface {
+	Reset(ctx context.Context) error
+}
+
+// Reset wipes every store in the bundle that supports it. Returns the first
+// error; remaining stores are still attempted so a partial failure does not
+// leave the demo state half-wiped. Stores that do not implement Resetter are
+// skipped — only the file/memory backends do, which is intentional.
+func (b *Bundle) Reset(ctx context.Context) error {
+	stores := []any{b.Webhooks, b.Classifications, b.Replies, b.Escalations, b.Idempotency, b.Memory, b.Conversions}
+	var firstErr error
+	for _, s := range stores {
+		rs, ok := s.(Resetter)
+		if !ok {
+			continue
+		}
+		if err := rs.Reset(ctx); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
 // Close runs every registered closer and returns the first error.
 func (b *Bundle) Close(ctx context.Context) error {
 	var firstErr error

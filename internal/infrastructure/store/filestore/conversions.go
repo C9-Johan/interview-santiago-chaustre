@@ -45,6 +45,18 @@ func (c *Conversions) Close() error {
 	return nil
 }
 
+// Reset truncates the conversions log so demo metrics restart at zero.
+func (c *Conversions) Reset(_ context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	f, err := truncateAndReopen(c.writer, c.path)
+	if err != nil {
+		return fmt.Errorf("conversions reset: %w", err)
+	}
+	c.writer = f
+	return nil
+}
+
 // MarkManaged appends a new managed record.
 func (c *Conversions) MarkManaged(_ context.Context, r domain.ManagedReservation) error {
 	if r.Status == "" {

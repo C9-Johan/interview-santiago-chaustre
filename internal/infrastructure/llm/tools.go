@@ -67,5 +67,31 @@ var GetConversationHistoryTool = openai.Tool{
 	},
 }
 
+// HoldReservationTool places a short-lived inquiry/reserved hold in Guesty.
+// The generator MUST call this before any body language that promises a hold
+// — the commitment guard and the prompt both treat an uncalled hold as
+// fabrication. Prefer "inquiry" for soft holds; "reserved" blocks the
+// calendar and is only appropriate when the guest explicitly agreed.
+var HoldReservationTool = openai.Tool{
+	Type: openai.ToolTypeFunction,
+	Function: &openai.FunctionDefinition{
+		Name:        "hold_reservation",
+		Description: "Place a hold on the listing for the given dates so the bot can truthfully tell the guest the dates are held. status='inquiry' = soft hold (no calendar block); status='reserved' = blocks the calendar pending host confirmation. Returns the Guesty reservation id + confirmation code.",
+		Strict:      true,
+		Parameters: map[string]any{
+			"type":                 "object",
+			"required":             []string{"listing_id", "check_in", "check_out", "status"},
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"listing_id":  map[string]any{"type": "string"},
+				"check_in":    map[string]any{"type": "string", "format": "date"},
+				"check_out":   map[string]any{"type": "string", "format": "date"},
+				"guest_count": map[string]any{"type": "integer", "minimum": 1, "maximum": 20},
+				"status":      map[string]any{"type": "string", "enum": []string{"inquiry", "reserved"}},
+			},
+		},
+	},
+}
+
 // AllTools is the slice passed to each agent-loop request.
-var AllTools = []openai.Tool{GetListingTool, CheckAvailabilityTool, GetConversationHistoryTool}
+var AllTools = []openai.Tool{GetListingTool, CheckAvailabilityTool, GetConversationHistoryTool, HoldReservationTool}

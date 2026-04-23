@@ -49,6 +49,15 @@ type Config struct {
 	ThreadContextWindow int
 	GuestMemoryLimit    int
 
+	// MemoryThreadCap is the maximum number of per-conversation thread entries
+	// the orchestrator keeps verbatim in ConversationMemoryRecord before the
+	// summarizer folds the oldest half into LastSummary. Sized to comfortably
+	// span a real inquiry flow (guest + bot alternation over several days).
+	MemoryThreadCap int
+	// MemoryThreadKeep is the number of most recent entries retained verbatim
+	// after a summary roll-up. Older entries collapse into LastSummary.
+	MemoryThreadKeep int
+
 	DataDir            string
 	StoreBackend       string
 	IdempotencyBackend string
@@ -151,6 +160,8 @@ func Load() (Config, error) {
 		GeneratorMinConf:    getFloat("CONFIDENCE_GENERATOR_MIN", 0.70),
 		ThreadContextWindow: getInt("THREAD_CONTEXT_WINDOW", 10),
 		GuestMemoryLimit:    getInt("GUEST_MEMORY_LIMIT", 5),
+		MemoryThreadCap:     getInt("MEMORY_THREAD_CAP", 50),
+		MemoryThreadKeep:    getInt("MEMORY_THREAD_KEEP", 20),
 
 		DataDir:            getenv("DATA_DIR", "./data"),
 		StoreBackend:       getenv("STORE_BACKEND", "file"),

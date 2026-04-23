@@ -6,6 +6,7 @@ import (
 
 	openai "github.com/sashabaranov/go-openai"
 
+	"github.com/chaustre/inquiryiq/internal/domain"
 	"github.com/chaustre/inquiryiq/internal/domain/repository"
 )
 
@@ -65,4 +66,22 @@ func (n *noopPostGuesty) PostNote(ctx context.Context, conversationID, body stri
 		slog.Int("body_len", len(body)),
 	)
 	return nil
+}
+
+// CreateReservation is also suppressed during dry-run replay — holds create
+// real Guesty state, which a read-only replay must not touch. The synthetic
+// result lets the generator's tool dispatcher proceed as if the hold worked
+// without actually writing anything.
+func (n *noopPostGuesty) CreateReservation(ctx context.Context, in domain.ReservationHoldInput) (domain.ReservationHoldResult, error) {
+	n.log.InfoContext(ctx, "replay_create_reservation_suppressed",
+		slog.String("listing_id", in.ListingID),
+		slog.String("status", string(in.Status)),
+	)
+	return domain.ReservationHoldResult{
+		ID:               "replay_res_" + in.ListingID,
+		Status:           in.Status,
+		CheckIn:          in.CheckIn,
+		CheckOut:         in.CheckOut,
+		ConfirmationCode: "REPLAYHOLD",
+	}, nil
 }

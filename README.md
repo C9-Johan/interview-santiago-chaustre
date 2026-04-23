@@ -182,6 +182,78 @@ but still lint for correctness.
 > functions, deeply nested if-chains, and copy-paste blocks. The gate
 > catches them before they ship.
 
+### 13. Server-side memory is the multi-turn source of truth
+
+Each turn appends the guest messages **and** the bot's reply to
+`ConversationMemoryRecord.Thread`, and merges extracted entities into
+`KnownEntities` (newer non-nil fields win, `Additional` deduped by key).
+On the next turn, `priorContext` reads memory first and only falls back
+to the webhook `thread` when memory is empty. The classifier and
+generator user messages render a deterministic
+`known_from_prior_turns:` block so the LLM sees dates, guest count,
+pets, vehicles, and listing hints without needing the guest to repeat
+them.
+
+> **Why:** Guesty webhooks sometimes arrive with an empty `thread`
+> (first-page fetches, the tester UI), and the guest shouldn't have to
+> restate dates and headcount on every message. Persisting the exchange
+> server-side means "Yes please" can actually resolve against "Want me
+> to hold the dates?" instead of re-qualifying from scratch.
+
+### 14. Three independent safeguards stop the reply loop
+
+A single bug shouldn't produce an infinite back-and-forth. Three guards
+break the cycle at different layers:
+
+- **Saturation guard** — if classification is X1 (vague) **and** memory
+  already holds check-in, check-out, and guest count, escalate with
+  `reason="qualifier_saturated"` without running the qualifier LLM.
+- **Commitment guard** — pre-classification pattern match: if the
+  previous bot turn contained a hold/booking offer ("Want me to hold
+  the dates?") **and** the guest reply is a short affirmative ("Yes
+  please"), escalate with `reason="commitment_needs_human"`. Fires
+  before any LLM call.
+- **R-beat prompt ban** — the generator's prompt forbids commitment
+  phrasing ("I'll hold", "I've reserved", "the dates are yours")
+  unless the same turn calls the `hold_reservation` tool; otherwise
+  the model must emit `abort_reason="needs_human_action"`.
+
+> **Why:** any one of these fails closed independently. The guards
+> cover the two failure modes we saw in testing — loops from
+> re-qualifying past the point of diminishing returns, and loops from
+> the bot making promises it couldn't keep.
+
+### 15. Real reservation holds via `hold_reservation` tool
+
+Guesty's `POST /reservations` is exposed through a
+`CreateReservation(ctx, in) (ReservationHoldResult, error)` method on
+the client, with `status=inquiry` (soft hold, no calendar block) and
+`status=reserved` (calendar-blocking). The generator can call the
+`hold_reservation` tool in the same turn where it offers a hold,
+cite the confirmation code back to the guest, and the reply stops
+being a promise.
+
+> **Why:** a bot that says "I'll hold the dates" without actually
+> holding them is worse than one that escalates — the guest moves on,
+> the dates stay open, and a competing booking wins. Wiring the real
+> reservation path means a commitment in the reply is backed by a
+> Guesty-side state change, not just a sentence.
+
+### 16. Summary compression on long threads
+
+`MemoryLimits{Cap, Keep}` (defaults 50/20, env-tunable) bound memory
+growth. When `len(Thread) > Cap`, the oldest `len(Thread) - Keep`
+entries are folded into `LastSummary` via the `summarize` use case
+(≤600-char LLM compression, server-capped at 1200). If the summarizer
+is absent or errors, `foldOverflow` falls back to plain truncation —
+correctness never depends on a successful LLM call.
+
+> **Why:** conversations can run for weeks. Unbounded memory makes
+> every subsequent classifier/generator call slower and more expensive;
+> losing the oldest context silently is worse. A compressed summary
+> keeps the bot grounded in what's happened without paying the
+> per-token tax every turn.
+
 ---
 
 ## Request flow

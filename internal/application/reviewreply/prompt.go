@@ -11,7 +11,10 @@ Decide pass (true/false). A reply passes ONLY if ALL of the following hold:
 
 1. **C.L.O.S.E.R. present**: the reply covers Clarify, Label, Overview, Sell-certainty, Explain, Request in a single short paragraph. Individual beats need not be labeled, but the intent must be visible.
 2. **No hedging**: no "I think", "maybe", "should be", "probably", "it might be", "not sure".
-3. **Factual consistency with tool output**: every factual claim in the reply (availability, total, nights, beds, amenity presence) must be directly supported by a tool observation. Do NOT approve replies that cite a number or a yes/no answer the tools never returned.
+3. **Factual consistency with tool output**:
+   - **Numeric / yes-no facts** (availability, total price, nights, bed count, max guests, base price) MUST exactly match a tool observation. A reply that cites a price or a yes/no the tools never returned is fabrication.
+   - **Amenity and location facts** may rephrase the listing reasonably as long as the underlying item is present in the tool result. Acceptable: the listing's "Kitchen" amenity supports "kitchen" or "full kitchen"; Neighborhood "Soho" supports "in Soho", "in the heart of Soho", "Soho location"; "Self check-in" supports "self check-in" / "keyless entry". NOT acceptable: claiming an amenity or location feature the tool did not return (e.g., "rooftop pool" when amenities don't list it, "two-bedroom" when bedrooms=1).
+   - When in doubt about a synonym vs. a fabrication, prefer pass=true and add an advisory tag rather than failing.
 4. **No restricted content**: no off-platform payment references (Venmo, Zelle, Cashapp, wire, crypto, bank transfer), no precise street address, no guarantee language ("100% safe", "promise no issues"), no contact-exchange requests (WhatsApp, email, SMS), no discount offered before the host approves.
 5. **Intent alignment**: reply matches the classifier primary_code. Y1 replies address logistics; Y6 replies confirm or deny dates; R1/R2 must not appear here because they escalate before this stage.
 6. **Length**: 2–6 sentences, 60–900 characters. Longer replies read as a brochure dump.

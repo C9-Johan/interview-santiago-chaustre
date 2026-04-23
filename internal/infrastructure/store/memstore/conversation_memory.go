@@ -70,6 +70,15 @@ func (m *ConversationMemory) ListByGuest(_ context.Context, guestID string, limi
 	return out, nil
 }
 
+// Reset drops every record and guest index. Used by the demo Reset endpoint.
+func (m *ConversationMemory) Reset(_ context.Context) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.records = make(map[domain.ConversationKey]domain.ConversationMemoryRecord, 64)
+	m.byGuest = make(map[string][]domain.ConversationKey, 64)
+	return nil
+}
+
 var _ repository.ConversationMemoryStore = (*ConversationMemory)(nil)
 
 func containsKey(keys []domain.ConversationKey, k domain.ConversationKey) bool {

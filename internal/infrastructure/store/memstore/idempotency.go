@@ -44,3 +44,12 @@ func (i *Idempotency) Complete(_ context.Context, k domain.ConversationKey, post
 	i.claimed[string(k)+"|"+postID] = true
 	return nil
 }
+
+// Reset drops every recorded claim so the demo Reset endpoint can replay a
+// previously-seen postID without the orchestrator dedupe-dropping it.
+func (i *Idempotency) Reset(_ context.Context) error {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.claimed = make(map[string]bool, 1024)
+	return nil
+}

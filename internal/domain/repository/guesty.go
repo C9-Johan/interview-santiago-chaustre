@@ -29,4 +29,9 @@ type GuestyClient interface {
 	// PostNote posts an internal note (type="note") to the conversation. Never
 	// reaches the guest.
 	PostNote(ctx context.Context, conversationID, body string) error
+
+	// CreateReservation POSTs /reservations with the given hold input. Returns
+	// the created reservation's id + confirmation code so the generator can
+	// cite a real hold. Implementations must map transport errors with %w.
+	CreateReservation(ctx context.Context, in domain.ReservationHoldInput) (domain.ReservationHoldResult, error)
 }

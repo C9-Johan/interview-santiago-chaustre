@@ -14,6 +14,7 @@ import (
 
 	"github.com/sony/gobreaker/v2"
 
+	"github.com/chaustre/inquiryiq/internal/domain"
 	"github.com/chaustre/inquiryiq/internal/infrastructure/guesty"
 )
 
@@ -100,6 +101,62 @@ func TestClientCheckAvailabilityBlocked(t *testing.T) {
 	}
 	if got.Available {
 		t.Fatalf("should be unavailable when any day is not 'available': %+v", got)
+	}
+}
+
+func TestClientCreateReservationHold(t *testing.T) {
+	t.Parallel()
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/reservations" {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"_id":"res_1","status":"reserved","checkIn":"2026-04-24T15:00:00Z","checkOut":"2026-04-26T11:00:00Z","confirmationCode":"HOLD1"}`))
+	}))
+	defer srv.Close()
+	c := guesty.NewClient(srv.URL, "dev", time.Second, 0)
+	res, err := c.CreateReservation(context.Background(), domain.ReservationHoldInput{
+		ListingID:  "L1",
+		CheckIn:    time.Date(2026, 4, 24, 0, 0, 0, 0, time.UTC),
+		CheckOut:   time.Date(2026, 4, 26, 0, 0, 0, 0, time.UTC),
+		GuestCount: 4,
+		Status:     domain.ReservationReserved,
+		GuestName:  "Sarah",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ID != "res_1" || res.ConfirmationCode != "HOLD1" {
+		t.Fatalf("unexpected result: %+v", res)
+	}
+	if gotBody["listingId"] != "L1" {
+		t.Fatalf("listingId missing or wrong: %+v", gotBody)
+	}
+	if gotBody["status"] != "reserved" {
+		t.Fatalf("status not propagated: %+v", gotBody)
+	}
+	if gotBody["checkInDateLocalized"] != "2026-04-24" {
+		t.Fatalf("check-in date wrong format: %+v", gotBody)
+	}
+	guest, _ := gotBody["guest"].(map[string]any)
+	if guest == nil || guest["fullName"] != "Sarah" {
+		t.Fatalf("guest object not populated when no GuestID: %+v", gotBody)
+	}
+}
+
+func TestClientCreateReservationRejectsMissingFields(t *testing.T) {
+	t.Parallel()
+	c := guesty.NewClient("http://unused", "dev", time.Second, 0)
+	if _, err := c.CreateReservation(context.Background(), domain.ReservationHoldInput{}); err == nil {
+		t.Fatal("expected error for empty input")
+	}
+	if _, err := c.CreateReservation(context.Background(), domain.ReservationHoldInput{
+		ListingID: "L1",
+	}); err == nil {
+		t.Fatal("expected error for missing check-in/out")
 	}
 }
 

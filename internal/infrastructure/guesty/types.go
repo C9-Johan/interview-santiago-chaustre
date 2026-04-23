@@ -101,3 +101,33 @@ type wireReservationMeta struct {
 	ConfirmationCode string    `json:"confirmationCode"`
 	ListingID        string    `json:"listingId"`
 }
+
+// wireReservationRequest is the POST /reservations body Guesty accepts for a
+// pre-booking hold. `status=inquiry` creates a soft hold (no calendar block);
+// `status=reserved` blocks the calendar pending host confirmation. Guest info
+// is optional — when absent Guesty creates a guest record.
+type wireReservationRequest struct {
+	ListingID             string                `json:"listingId"`
+	CheckInDateLocalized  string                `json:"checkInDateLocalized"`
+	CheckOutDateLocalized string                `json:"checkOutDateLocalized"`
+	Status                string                `json:"status"`
+	GuestsCount           int                   `json:"guestsCount,omitempty"`
+	GuestID               string                `json:"guestId,omitempty"`
+	Guest                 *wireReservationGuest `json:"guest,omitempty"`
+	Source                string                `json:"source,omitempty"`
+}
+
+type wireReservationGuest struct {
+	FullName string `json:"fullName,omitempty"`
+	Email    string `json:"email,omitempty"`
+}
+
+// wireReservationResponse is the JSON Guesty returns from POST /reservations.
+// We only decode the fields the generator cites back to the guest.
+type wireReservationResponse struct {
+	ID               string    `json:"_id"`
+	Status           string    `json:"status"`
+	CheckIn          time.Time `json:"checkIn"`
+	CheckOut         time.Time `json:"checkOut"`
+	ConfirmationCode string    `json:"confirmationCode"`
+}

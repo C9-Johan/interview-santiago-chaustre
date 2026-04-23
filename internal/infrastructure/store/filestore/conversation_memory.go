@@ -61,6 +61,22 @@ func (m *ConversationMemory) Close() error {
 	return nil
 }
 
+// Reset truncates the JSONL log and clears in-memory indexes. The demo Reset
+// endpoint calls this so a follow-up turn cannot inherit stale guest_profile
+// or thread context from the previous run.
+func (m *ConversationMemory) Reset(_ context.Context) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	f, err := truncateAndReopen(m.writer, m.path)
+	if err != nil {
+		return fmt.Errorf("conversation_memory reset: %w", err)
+	}
+	m.writer = f
+	m.records = make(map[domain.ConversationKey]domain.ConversationMemoryRecord, 64)
+	m.byGuest = make(map[string][]domain.ConversationKey, 64)
+	return nil
+}
+
 // Get returns the record for k, or a zero record when absent.
 func (m *ConversationMemory) Get(_ context.Context, k domain.ConversationKey) (domain.ConversationMemoryRecord, error) {
 	m.mu.Lock()

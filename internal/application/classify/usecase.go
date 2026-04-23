@@ -152,6 +152,10 @@ func buildUserMessage(in Input) string {
 	if in.Prior.Summary != "" {
 		fmt.Fprintf(&b, "prior_thread_summary: %q\n", in.Prior.Summary)
 	}
+	if known := in.Prior.RenderKnownEntities(); known != "" {
+		b.WriteString("known_from_prior_turns:\n")
+		b.WriteString(known)
+	}
 	b.WriteString("\n")
 	b.WriteString(promptsafety.Wrap("prior_thread", priorThreadText(in.Prior)))
 	b.WriteString("\n\n")

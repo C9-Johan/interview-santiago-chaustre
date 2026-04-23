@@ -55,6 +55,13 @@ type AdminEscalationsSource interface {
 	List(ctx context.Context, limit int) ([]domain.Escalation, error)
 }
 
+// AdminResetSource is the consumer-side contract for the demo Reset endpoint.
+// Satisfied structurally by *store.Bundle. Optional — when nil the route
+// returns 503 so a hardened deployment never accidentally exposes "wipe all".
+type AdminResetSource interface {
+	Reset(ctx context.Context) error
+}
+
 // AdminHandler exposes operator-controlled runtime state — the auto-response
 // kill-switch plus a read-only view of the LLM budget. Guarded by a shared
 // bearer token against the Authorization header; an empty configured Token
@@ -68,6 +75,7 @@ type AdminHandler struct {
 	Classifications AdminClassificationsSource
 	Replies         AdminRepliesSource
 	Escalations     AdminEscalationsSource
+	Reset           AdminResetSource
 	Token           string
 	Log             *slog.Logger
 }
@@ -215,6 +223,27 @@ func (h *AdminHandler) GetTurnByPostID(w nethttp.ResponseWriter, r *nethttp.Requ
 		out["escalation"] = findEscalationByPostID(r.Context(), h.Escalations, postID)
 	}
 	writeJSON(w, nethttp.StatusOK, out)
+}
+
+// PostReset wipes every demo-relevant store so a presenter can replay a
+// scenario from a clean slate without bouncing the process. 503 when no
+// Reset source is wired so a hardened deployment never accidentally exposes
+// "wipe all". Token-guarded like the rest of /admin.
+func (h *AdminHandler) PostReset(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if !h.authorized(w, r) {
+		return
+	}
+	if h.Reset == nil {
+		writeJSON(w, nethttp.StatusServiceUnavailable, map[string]string{"error": "reset disabled"})
+		return
+	}
+	if err := h.Reset.Reset(r.Context()); err != nil {
+		h.Log.WarnContext(r.Context(), "admin_reset_failed", slog.String("err", err.Error()))
+		writeJSON(w, nethttp.StatusInternalServerError, map[string]string{"error": "reset failed"})
+		return
+	}
+	h.Log.InfoContext(r.Context(), "admin_reset_ok")
+	writeJSON(w, nethttp.StatusOK, map[string]string{"ok": "true"})
 }
 
 // findEscalationByPostID walks the recent escalation list (capped at 500 to

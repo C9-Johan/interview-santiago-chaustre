@@ -40,6 +40,19 @@ func NewWebhooks(dir string) (*Webhooks, error) {
 // Close flushes and closes the writer.
 func (w *Webhooks) Close() error { return w.writer.Close() }
 
+// Reset truncates the webhook log so the demo Reset endpoint clears the
+// raw audit trail along with everything else.
+func (w *Webhooks) Reset(_ context.Context) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	f, err := truncateAndReopen(w.writer, w.path)
+	if err != nil {
+		return fmt.Errorf("webhooks reset: %w", err)
+	}
+	w.writer = f
+	return nil
+}
+
 // Append serializes rec as one JSON line and fsyncs.
 func (w *Webhooks) Append(_ context.Context, rec repository.WebhookRecord) error {
 	w.mu.Lock()

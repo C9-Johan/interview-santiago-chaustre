@@ -47,8 +47,19 @@ else:
     compose_files = '-f compose/dev.yml'
     mode_label    = 'dev-lite'
 
+# Rootless podman + parallel `up --build` races on shared cache layers in
+# the overlay store (the tester and inquiryiq Dockerfiles both pull from
+# golang:1.26-alpine), surfacing as
+#   `readlink .../storage/overlay/l: invalid argument`
+# mid-build. `--parallel 1` makes podman-compose serialize service ops and
+# eliminates the race. docker compose doesn't accept `--parallel` as a
+# global flag, so only inject it when the configured binary is podman's.
+compose_serial_flag = '--parallel 1' if 'podman' in compose_bin else ''
+
 def compose_cmd(verb):
-    return '{bin} {files} {verb}'.format(bin=compose_bin, files=compose_files, verb=verb)
+    return '{bin} {flags} {files} {verb}'.format(
+        bin=compose_bin, flags=compose_serial_flag, files=compose_files, verb=verb,
+    )
 
 # Wrap a shell command so it sources .env.local first — matches the
 # precedence of mise and `make up`. `set -a` auto-exports every var so

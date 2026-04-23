@@ -190,6 +190,12 @@ func (l *toolCallLog) reset() {
 	l.items = l.items[:0]
 }
 
+func (c *conversationLog) reset() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.items = map[string][]logEntry{}
+}
+
 // toolName maps the Guesty path prefix to the tool the agent actually
 // called. Unknown prefixes return the raw path so nothing is silently
 // dropped.
@@ -203,6 +209,8 @@ func toolName(p string) string {
 		return "get_conversation_history"
 	case strings.HasPrefix(p, "/communication/conversations/"):
 		return "get_conversation"
+	case p == "/reservations" || strings.HasPrefix(p, "/reservations/"):
+		return "hold_reservation"
 	}
 	return p
 }
@@ -215,6 +223,7 @@ func (s *server) routes() http.Handler {
 	api.HandleFunc("GET /api/health", s.handleHealth)
 	api.HandleFunc("GET /api/tool-calls", s.handleToolCalls)
 	api.HandleFunc("POST /api/tool-calls/reset", s.handleToolCallsReset)
+	api.HandleFunc("POST /api/reset", s.handleReset)
 	api.HandleFunc("POST /api/confirm-reservation/{id}", s.handleConfirmReservation)
 	api.HandleFunc("GET /api/conversions", s.handleConversions)
 	api.HandleFunc("GET /api/turn-details/{post_id}", s.handleTurnDetails)
@@ -268,7 +277,10 @@ func isInterceptedSend(r *http.Request) bool {
 // Keeping the list explicit (rather than "anything non-UI") means the UI
 // can add its own /favicon.ico or /health without those leaking to Mockoon.
 func isGuestyPath(p string) bool {
-	prefixes := []string{"/listings/", "/availability-pricing/", "/communication/"}
+	if p == "/reservations" {
+		return true
+	}
+	prefixes := []string{"/listings/", "/availability-pricing/", "/communication/", "/reservations/"}
 	for _, prefix := range prefixes {
 		if strings.HasPrefix(p, prefix) {
 			return true
@@ -502,6 +514,37 @@ func (s *server) handleToolCalls(w http.ResponseWriter, _ *http.Request) {
 // handleToolCallsReset clears the tool-call log so the smoke can assert on
 // calls made in a single scenario rather than everything since boot.
 func (s *server) handleToolCallsReset(w http.ResponseWriter, _ *http.Request) {
+	s.toolCalls.reset()
+	writeJSON(w, http.StatusOK, map[string]string{"ok": "true"})
+}
+
+// handleReset proxies POST /admin/reset on the service (token-guarded) and
+// clears the tester's local conversation + tool-call logs in the same call
+// so the demo UI returns to a clean slate in one button press.
+func (s *server) handleReset(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.adminToken == "" {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "ADMIN_TOKEN not configured"})
+		return
+	}
+	upstream, err := http.NewRequestWithContext(r.Context(), http.MethodPost,
+		s.cfg.serviceURL+"/admin/reset", nil)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	upstream.Header.Set("Authorization", "Bearer "+s.cfg.adminToken)
+	resp, err := http.DefaultClient.Do(upstream)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		writeJSON(w, resp.StatusCode, map[string]string{"error": "service reset failed: " + string(body)})
+		return
+	}
+	s.logs.reset()
 	s.toolCalls.reset()
 	writeJSON(w, http.StatusOK, map[string]string{"ok": "true"})
 }

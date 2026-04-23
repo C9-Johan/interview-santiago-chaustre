@@ -187,6 +187,58 @@ func (c *Client) PostNote(ctx context.Context, conversationID, body string) erro
 	return c.do(ctx, http.MethodPost, path, payload, nil)
 }
 
+// CreateReservation POSTs /reservations with the hold payload. The caller
+// decides whether the hold is a soft inquiry or a calendar-blocking reserved
+// state via in.Status; the client never promotes to "confirmed" on its own
+// because an auto-confirmed booking is a human commitment by policy.
+func (c *Client) CreateReservation(
+	ctx context.Context, in domain.ReservationHoldInput,
+) (domain.ReservationHoldResult, error) {
+	if in.ListingID == "" {
+		return domain.ReservationHoldResult{}, fmt.Errorf("reservation hold: missing listing_id")
+	}
+	if in.CheckIn.IsZero() || in.CheckOut.IsZero() {
+		return domain.ReservationHoldResult{}, fmt.Errorf("reservation hold: missing check-in/out")
+	}
+	status := in.Status
+	if status == "" {
+		status = domain.ReservationInquiry
+	}
+	req := wireReservationRequest{
+		ListingID:             in.ListingID,
+		CheckInDateLocalized:  in.CheckIn.UTC().Format("2006-01-02"),
+		CheckOutDateLocalized: in.CheckOut.UTC().Format("2006-01-02"),
+		Status:                string(status),
+		GuestsCount:           in.GuestCount,
+		GuestID:               in.GuestID,
+		Source:                "inquiryiq-bot",
+	}
+	if in.GuestID == "" && (in.GuestName != "" || in.GuestEmail != "") {
+		req.Guest = &wireReservationGuest{FullName: in.GuestName, Email: in.GuestEmail}
+	}
+	var wire wireReservationResponse
+	if err := c.do(ctx, http.MethodPost, "/reservations", req, &wire); err != nil {
+		return domain.ReservationHoldResult{}, err
+	}
+	resp := domain.ReservationHoldResult{
+		ID:               wire.ID,
+		Status:           domain.ReservationHoldStatus(wire.Status),
+		CheckIn:          wire.CheckIn,
+		CheckOut:         wire.CheckOut,
+		ConfirmationCode: wire.ConfirmationCode,
+	}
+	if resp.Status == "" {
+		resp.Status = status
+	}
+	if resp.CheckIn.IsZero() {
+		resp.CheckIn = in.CheckIn
+	}
+	if resp.CheckOut.IsZero() {
+		resp.CheckOut = in.CheckOut
+	}
+	return resp, nil
+}
+
 // defaultThreadPageSize matches the ThreadContextWindow default in config.
 // When the generator needs more, it invokes the get_conversation_history tool
 // with a larger limit rather than refetching GetConversation.

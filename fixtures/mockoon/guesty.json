@@ -170,6 +170,39 @@
       "streamingInterval": 0
     },
     {
+      "uuid": "22222222-2222-2222-2222-222222222226",
+      "type": "http",
+      "documentation": "POST /reservations — create a hold (inquiry/reserved)",
+      "method": "post",
+      "endpoint": "reservations",
+      "responses": [
+        {
+          "uuid": "33333333-3333-3333-3333-333333333351",
+          "body": "{\n  \"_id\": \"res_{{faker 'string.uuid'}}\",\n  \"status\": {{{jsonEscape (body 'status' 'inquiry')}}},\n  \"listingId\": {{{jsonEscape (body 'listingId' '')}}},\n  \"checkIn\": \"{{body 'checkInDateLocalized'}}T15:00:00Z\",\n  \"checkOut\": \"{{body 'checkOutDateLocalized'}}T11:00:00Z\",\n  \"confirmationCode\": \"HOLD-{{faker 'string.alphanumeric' 6}}\"\n}",
+          "latency": 0,
+          "statusCode": 201,
+          "label": "Hold created",
+          "headers": [
+            { "key": "Content-Type", "value": "application/json" }
+          ],
+          "bodyType": "INLINE",
+          "filePath": "",
+          "databucketID": "",
+          "sendFileAsBody": false,
+          "rules": [],
+          "rulesOperator": "OR",
+          "disableTemplating": false,
+          "fallbackTo404": false,
+          "default": true,
+          "crudKey": "id",
+          "callbacks": []
+        }
+      ],
+      "responseMode": null,
+      "streamingMode": null,
+      "streamingInterval": 0
+    },
+    {
       "uuid": "22222222-2222-2222-2222-222222222225",
       "type": "http",
       "documentation": "POST /communication/conversations/{id}/send-message — internal note",
@@ -208,7 +241,8 @@
     { "type": "route", "uuid": "22222222-2222-2222-2222-222222222222" },
     { "type": "route", "uuid": "22222222-2222-2222-2222-222222222223" },
     { "type": "route", "uuid": "22222222-2222-2222-2222-222222222224" },
-    { "type": "route", "uuid": "22222222-2222-2222-2222-222222222225" }
+    { "type": "route", "uuid": "22222222-2222-2222-2222-222222222225" },
+    { "type": "route", "uuid": "22222222-2222-2222-2222-222222222226" }
   ],
   "proxyMode": false,
   "proxyHost": "",

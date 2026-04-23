@@ -16,8 +16,30 @@ import (
 	"github.com/chaustre/inquiryiq/internal/application/decide"
 	"github.com/chaustre/inquiryiq/internal/application/generatereply"
 	"github.com/chaustre/inquiryiq/internal/application/processinquiry"
+	"github.com/chaustre/inquiryiq/internal/application/reviewreply"
 	"github.com/chaustre/inquiryiq/internal/domain"
 )
+
+// fakeCritic returns a fixed verdict so a test can drive the orchestrator
+// down the critic-rejection path without spinning up a real LLM.
+type fakeCritic struct {
+	verdict reviewreply.Verdict
+}
+
+func (f *fakeCritic) Review(_ context.Context, _ reviewreply.Input) reviewreply.Verdict {
+	return f.verdict
+}
+
+// failVerdict builds a critic verdict that fails with the given hard-blocker
+// tag, matching the on-the-wire shape the production critic emits.
+func failVerdict(issue string) reviewreply.Verdict {
+	return reviewreply.Verdict{
+		Pass:       false,
+		Issues:     []string{issue},
+		Confidence: 0.9,
+		Reasoning:  "test fixture: critic blocker",
+	}
+}
 
 // --- fakes ---
 
@@ -67,6 +89,16 @@ func (g *fakeGuesty) PostNote(_ context.Context, convID, body string) error {
 	g.postedConvID = convID
 	g.postedNotes = append(g.postedNotes, body)
 	return nil
+}
+
+func (*fakeGuesty) CreateReservation(_ context.Context, in domain.ReservationHoldInput) (domain.ReservationHoldResult, error) {
+	return domain.ReservationHoldResult{
+		ID:               "res_fake_" + in.ListingID,
+		Status:           in.Status,
+		CheckIn:          in.CheckIn,
+		CheckOut:         in.CheckOut,
+		ConfirmationCode: "FAKEHOLD",
+	}, nil
 }
 
 type fakeIdempotency struct {
@@ -225,17 +257,21 @@ func closerAll() domain.CloserBeats {
 
 const goodReplyBody = "Hi Sarah — you're looking at Fri–Sun for 4, quick city weekend. Our Soho 2BR sleeps 4 with self check-in on Spring St. Those dates are open and the total is $480 for 2 nights, taxes included. The courtyard bedroom is the quietest sleep in Manhattan. Want me to hold it while you decide?"
 
+// testConvID is the synthetic conversation id every orchestrator test uses.
+// Declared once so goconst stops flagging the duplication across tests.
+const testConvID = "conv_test"
+
 func validInput() processinquiry.Input {
 	return processinquiry.Input{
 		Turn: domain.Turn{
-			Key:        domain.ConversationKey("conv_test"),
+			Key:        domain.ConversationKey(testConvID),
 			LastPostID: "post_1",
 			Messages: []domain.Message{
 				{PostID: "post_1", Body: "Open Fri-Sun for 4 adults?", Role: domain.RoleGuest, CreatedAt: time.Now()},
 			},
 		},
 		Conversation: domain.Conversation{
-			RawID:       "conv_test",
+			RawID:       testConvID,
 			GuestID:     "guest_1",
 			GuestName:   "Sarah",
 			Integration: domain.Integration{Platform: "airbnb2"},
@@ -280,7 +316,7 @@ func TestRunHappyAutoSend(t *testing.T) {
 	if len(g.postedNotes) != 1 {
 		t.Fatalf("want 1 note posted, got %d", len(g.postedNotes))
 	}
-	if g.postedConvID != "conv_test" {
+	if g.postedConvID != testConvID {
 		t.Fatalf("want conv_test, got %q", g.postedConvID)
 	}
 	if len(esc.records) != 0 {

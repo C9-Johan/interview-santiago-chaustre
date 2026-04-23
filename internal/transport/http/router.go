@@ -23,6 +23,7 @@ func NewRouter(h *Handler, rh *ReservationHandler, ah *AdminHandler) nethttp.Han
 		r.Get("/admin/budget", ah.GetBudget)
 		r.Get("/admin/conversions", ah.GetConversions)
 		r.Get("/admin/turn/{post_id}", ah.GetTurnByPostID)
+		r.Post("/admin/reset", ah.PostReset)
 	}
 	r.Get("/escalations", h.Escalations)
 	r.Get("/healthz", h.Health)

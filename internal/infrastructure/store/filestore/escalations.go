@@ -18,6 +18,7 @@ import (
 // Safe for concurrent use.
 type Escalations struct {
 	mu     sync.Mutex
+	path   string
 	writer *os.File
 }
 
@@ -33,7 +34,7 @@ func NewEscalations(dir string) (*Escalations, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open escalations: %w", err)
 	}
-	return &Escalations{writer: f}, nil
+	return &Escalations{path: path, writer: f}, nil
 }
 
 // Close closes the underlying file.
@@ -41,6 +42,19 @@ func (e *Escalations) Close() error {
 	if err := e.writer.Close(); err != nil {
 		return fmt.Errorf("close escalations: %w", err)
 	}
+	return nil
+}
+
+// Reset truncates the durable escalations log. Wired into the demo Reset
+// endpoint via the EscalationRing wrapper.
+func (e *Escalations) Reset(_ context.Context) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	f, err := truncateAndReopen(e.writer, e.path)
+	if err != nil {
+		return fmt.Errorf("escalations reset: %w", err)
+	}
+	e.writer = f
 	return nil
 }
 
