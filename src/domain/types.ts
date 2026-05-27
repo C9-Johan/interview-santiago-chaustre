@@ -46,6 +46,26 @@ export const Classification = z.object({
 });
 export type Classification = z.infer<typeof Classification>;
 
+/**
+ * Strict "wire" schema for OpenAI structured output. The provider's strict JSON-schema mode requires
+ * EVERY property to be listed as `required` (optionality must be expressed as nullable, not absent),
+ * so the domain `Classification` above — which uses defaults/optionals for ergonomics — can't be sent
+ * directly. Parse the model's result through `Classification` afterwards to land back in the domain type.
+ */
+export const ClassificationWire = z.object({
+  primary_code: TrafficLightCode,
+  secondary_code: TrafficLightCode.nullable(),
+  confidence: z.number().min(0).max(1),
+  extracted_entities: z.object({
+    dates: z.array(z.string()),
+    guestCount: z.number().int().positive().nullable(),
+    pets: z.boolean().nullable(),
+    vehicles: z.number().int().nonnegative().nullable(),
+  }),
+  risk_flag: z.boolean(),
+  rationale: z.string(),
+});
+
 /** Outcome of the hard-rules auto-send gate. */
 export type DecisionAction = 'auto_send' | 'escalate';
 export interface Decision {

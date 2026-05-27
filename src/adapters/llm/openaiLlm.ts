@@ -7,7 +7,7 @@ import type {
   GenerateReplyInput,
   LlmPort,
 } from '../../ports/LlmPort.js';
-import { Classification } from '../../domain/types.js';
+import { Classification, ClassificationWire } from '../../domain/types.js';
 import {
   CLASSIFY_SYSTEM_PROMPT,
   buildClassifyPrompt,
@@ -30,12 +30,13 @@ export function createOpenAiLlm(opts: { model: string }): LlmPort {
     async classify(input: ClassifyInput): Promise<Classification> {
       const { object } = await generateObject({
         model,
-        schema: Classification,
+        // Strict wire schema (all keys required) for OpenAI structured output; see types.ts.
+        schema: ClassificationWire,
         system: CLASSIFY_SYSTEM_PROMPT,
         prompt: buildClassifyPrompt(input),
       });
-      // generateObject already validated against the schema; object is a Classification.
-      return object;
+      // Coerce the validated wire result into the domain Classification.
+      return Classification.parse(object);
     },
 
     async generateReply(
