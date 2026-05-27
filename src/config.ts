@@ -16,6 +16,7 @@ export interface Config {
   openaiModel: string;
   autoResponseEnabled: boolean;
   debounceMs: number;
+  traceDir: string;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -27,5 +28,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     openaiModel: env.OPENAI_MODEL || 'gpt-4o-mini',
     autoResponseEnabled: bool(env.AUTO_RESPONSE_ENABLED, true),
     debounceMs: Number(env.DEBOUNCE_MS ?? 0),
+    traceDir: env.TRACE_DIR || 'traces',
   };
 }

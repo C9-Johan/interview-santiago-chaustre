@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import express, { type Request, type Response, type Router } from 'express';
 import type { Store } from '../ports/Store.js';
 import type { VerifyResult } from './verifySignature.js';
@@ -6,8 +7,9 @@ import { rawJsonBody } from './rawBody.js';
 export interface WebhookDeps {
   store: Store;
   verify: (rawBody: Buffer, headers: Request['headers']) => VerifyResult;
-  /** Fire-and-forget async pipeline. MUST NOT be awaited — the route acks first, then processes. */
-  process: (payload: unknown) => void;
+  /** Fire-and-forget async pipeline. MUST NOT be awaited — the route acks first, then processes.
+   *  `requestId` is the trace id that ties this delivery to every downstream step. */
+  process: (payload: unknown, requestId: string) => void;
   log: typeof import('../adapters/log/logger.js').logger;
 }
 
@@ -25,12 +27,14 @@ export function createWebhookRouter(deps: WebhookDeps): Router {
     rawJsonBody,
     (req: Request, res: Response) => {
       const rawBody = req.body as Buffer;
+      // One trace id per delivery — flows through dedup, debounce, and the whole pipeline.
+      const requestId = randomUUID();
 
       // a. Signature first. A bad signature is a hard reject — 401, and Guesty won't retry it
       // (intentional: replaying the same bad bytes would just fail again).
       const verification = deps.verify(rawBody, req.headers);
       if (!verification.ok) {
-        deps.log.warn({ reason: verification.reason }, 'webhook signature rejected');
+        deps.log.warn({ requestId, reason: verification.reason }, 'webhook signature rejected');
         res.status(401).json({ error: verification.reason });
         return;
       }
@@ -40,7 +44,7 @@ export function createWebhookRouter(deps: WebhookDeps): Router {
       try {
         payload = JSON.parse(rawBody.toString('utf8'));
       } catch {
-        deps.log.warn('webhook body was not valid JSON');
+        deps.log.warn({ requestId }, 'webhook body was not valid JSON');
         res.status(400).json({ error: 'invalid JSON body' });
         return;
       }
@@ -56,7 +60,7 @@ export function createWebhookRouter(deps: WebhookDeps): Router {
           ? (payload as { message: { postId?: unknown } }).message.postId
           : undefined;
 
-      deps.log.info({ svixId, postId }, 'webhook received');
+      deps.log.info({ requestId, svixId, postId }, 'webhook received');
 
       // c. Idempotency. Dedup on message-level (postId) and delivery-level (svix-id). We call
       // seen() for BOTH keys so both get recorded even on first sight — using || would
@@ -66,18 +70,19 @@ export function createWebhookRouter(deps: WebhookDeps): Router {
         typeof postId === 'string' ? deps.store.seen(`msg:${postId}`) : false;
       const svixIdSeen = svixId !== undefined ? deps.store.seen(`evt:${svixId}`) : false;
       if (postIdSeen || svixIdSeen) {
-        deps.log.info({ svixId, postId }, 'webhook duplicate — skipping processing');
+        deps.log.info({ requestId, svixId, postId }, 'webhook duplicate — skipping processing');
         res.status(200).json({ status: 'duplicate' });
         return;
       }
 
       // d. Ack immediately (contract requires <few hundred ms). Processing happens after.
-      res.status(200).json({ status: 'accepted' });
-      deps.log.info({ svixId, postId }, 'webhook accepted');
+      // We return the requestId so the caller can correlate with the trace file/logs.
+      res.status(200).json({ status: 'accepted', requestId });
+      deps.log.info({ requestId, svixId, postId }, 'webhook accepted');
 
       // e. Fire-and-forget AFTER the response. setImmediate hands control back to the event loop
       // so the response flushes first; the pipeline owns its own error handling/retries.
-      setImmediate(() => deps.process(payload));
+      setImmediate(() => deps.process(payload, requestId));
     },
   );
 

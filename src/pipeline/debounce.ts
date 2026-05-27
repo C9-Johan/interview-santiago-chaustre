@@ -20,23 +20,27 @@ import { logger } from '../adapters/log/logger.js';
  */
 export function createDebouncer(
   windowMs: number,
-  downstream: (payload: unknown) => void,
-): (payload: unknown) => void {
+  downstream: (payload: unknown, requestId: string) => void,
+): (payload: unknown, requestId: string) => void {
   if (windowMs <= 0) return downstream;
 
   const pending = new Map<string, NodeJS.Timeout>();
 
-  return function debounced(payload: unknown): void {
+  return function debounced(payload: unknown, requestId: string): void {
     const key = conversationKey(payload);
 
-    // Reset the window: a newer message means the guest is still typing their turn.
+    // Reset the window: a newer message means the guest is still typing their turn. The surviving
+    // timer carries the LATEST payload + requestId, so the coalesced turn traces under one id.
     const existing = pending.get(key);
     if (existing) clearTimeout(existing);
 
     const timer = setTimeout(() => {
       pending.delete(key);
-      logger.info({ conversationId: key }, 'debounce window elapsed — processing coalesced turn');
-      downstream(payload);
+      logger.info(
+        { conversationId: key, requestId },
+        'debounce window elapsed — processing coalesced turn',
+      );
+      downstream(payload, requestId);
     }, windowMs);
     // Don't let a pending debounce keep the process (or a test runner) alive.
     timer.unref?.();

@@ -4,7 +4,7 @@ import type { Store } from '../ports/Store.js';
 import { parseWebhook } from '../domain/parseWebhook.js';
 import { decide } from '../domain/decide.js';
 import { STRATEGY } from '../domain/taxonomy.js';
-import { traceLogger } from '../adapters/log/logger.js';
+import { createTracer, type TraceSink } from '../telemetry/trace.js';
 import type { GuestMessage, Classification } from '../domain/types.js';
 
 /**
@@ -12,38 +12,51 @@ import type { GuestMessage, Classification } from '../domain/types.js';
  * must never crash the process. Sequence: parse → guards → classify → decide (hard rules) →
  * auto-send | escalate. Both outcomes leave an internal Guesty note so a human can see what happened.
  *
+ * Every step is traced: logged live (pino child bound to `requestId`) AND buffered into a JSON trace
+ * file via the TraceSink, so a full run can be replayed/verified later without a database. The
+ * `requestId` is generated at the webhook entry and threaded in here so transport and pipeline lines
+ * share one id.
+ *
  * Built as a factory taking its ports via DI so it's trivially testable and adapter-agnostic.
  */
 export function createProcessMessage(deps: {
   llm: LlmPort;
   guesty: GuestyPort;
   store: Store;
-}): (payload: unknown) => Promise<void> {
-  const { llm, guesty, store } = deps;
+  traceSink: TraceSink;
+}): (payload: unknown, requestId: string) => Promise<void> {
+  const { llm, guesty, store, traceSink } = deps;
 
-  return async function processMessage(payload: unknown): Promise<void> {
+  return async function processMessage(payload: unknown, requestId: string): Promise<void> {
+    const trace = createTracer(requestId, traceSink);
+    // First step captures exactly what the agent received — the raw inbound payload.
+    trace.step('webhook_received', { payload });
+
     let msg: GuestMessage;
     try {
       msg = parseWebhook(payload);
     } catch (err) {
-      traceLogger('unparsed').error({ err: String(err) }, 'could not parse webhook payload');
+      trace.step('parse_failed', { error: String(err) });
+      await trace.finish('error');
       return;
     }
-
-    const log = traceLogger(msg.postId);
+    trace.context({ postId: msg.postId, conversationId: msg.conversationId });
+    trace.step('parsed', { message: msg });
 
     // --- Guards: skip without crashing (CHALLENGE / contract edge cases) ---
     if (msg.sender !== 'guest') {
-      log.info({ sender: msg.sender }, 'not a guest message — ignoring');
+      trace.step('ignored', { reason: 'not a guest message', sender: msg.sender });
+      await trace.finish('ignored');
       return;
     }
     if (msg.body.trim() === '') {
-      log.info('empty/whitespace body (sticker/attachment/system) — ignoring');
+      trace.step('ignored', { reason: 'empty/whitespace body (sticker/attachment/system)' });
+      await trace.finish('ignored');
       return;
     }
     if (msg.hostAlreadyReplied) {
-      // A human already responded later in the thread — no need to auto-reply over them.
-      log.info('host already replied in thread — skipping auto-reply');
+      trace.step('ignored', { reason: 'host already replied in thread' });
+      await trace.finish('ignored');
       return;
     }
 
@@ -56,59 +69,58 @@ export function createProcessMessage(deps: {
         thread: msg.thread,
       });
     } catch (err) {
-      log.error({ err: String(err) }, 'classification failed — escalating');
-      await escalate(msg, 'classification failed', log);
+      trace.step('classify_failed', { error: String(err) });
+      const noteId = await escalate(msg, 'classification failed');
+      trace.step('escalation_note_posted', { noteId, reason: 'classification failed' });
+      await trace.finish('escalated');
       return;
     }
-    log.info(
-      {
-        primary: classification.primary_code,
-        secondary: classification.secondary_code,
-        confidence: classification.confidence,
-        risk: classification.risk_flag,
-      },
-      'classified',
-    );
+    trace.step('classified', { classification });
 
     // --- Decide (PURE hard-rules gate — never the LLM's call) ---
     const decision = decide(classification, {
       autoResponseEnabled: store.isAutoResponseEnabled(),
     });
-    log.info({ action: decision.action, reason: decision.reason }, 'decision');
+    trace.step('decided', { decision });
 
     if (decision.action === 'escalate') {
-      await escalate(msg, decision.reason, log, classification);
+      const noteId = await escalate(msg, decision.reason, classification);
+      trace.step('escalation_note_posted', { noteId, reason: decision.reason });
+      await trace.finish('escalated');
       return;
     }
 
     // --- Auto-send: generate grounded C.L.O.S.E.R. reply, then post as internal note ---
     try {
       const reply = await llm.generateReply({ message: msg, classification }, guesty);
+      trace.step('reply_generated', { reply });
       const note = await guesty.postNote(msg.conversationId, reply);
-      log.info({ noteId: note.id }, 'auto-reply posted as internal note');
+      trace.step('auto_reply_posted', { noteId: note.id });
+      await trace.finish('auto_sent');
     } catch (err) {
       // generateReply throws when a required fact is missing — escalate rather than fake it.
-      log.error({ err: String(err) }, 'reply generation/send failed — escalating');
-      await escalate(msg, 'reply generation failed', log, classification);
+      trace.step('reply_failed', { error: String(err) });
+      const noteId = await escalate(msg, 'reply generation failed', classification);
+      trace.step('escalation_note_posted', { noteId, reason: 'reply generation failed' });
+      await trace.finish('escalated');
     }
   };
 
-  /** Post a human-review note so escalations are visible to operators in the conversation. */
+  /** Post a human-review note so escalations are visible to operators. Returns the note id or null. */
   async function escalate(
     msg: GuestMessage,
     reason: string,
-    log: ReturnType<typeof traceLogger>,
     classification?: Classification,
-  ): Promise<void> {
+  ): Promise<string | null> {
     const summary = classification
       ? `${classification.primary_code} (${STRATEGY[classification.primary_code]}), confidence ${classification.confidence}`
       : 'not classified';
     const body = `⚠️ NEEDS HUMAN REVIEW — ${reason}.\nClassification: ${summary}.\nGuest said: "${msg.body}"`;
     try {
       const note = await guesty.postNote(msg.conversationId, body);
-      log.info({ noteId: note.id, reason }, 'escalation note posted');
-    } catch (err) {
-      log.error({ err: String(err), reason }, 'failed to post escalation note');
+      return note.id;
+    } catch {
+      return null;
     }
   }
 }

@@ -79,8 +79,14 @@ adapters/    implementations: llm/{mock,openai}, guesty/mockGuesty, store/memory
 
 - **Idempotency / dedup** — retries don't double-reply.
 - **Operator kill switch** — `GET/POST /admin/auto-response`, gates the auto-send rule.
-- **Observability** — structured per-message trace logs keyed by `correlationId` (the `postId`), plus
-  `GET /admin/notes` to inspect everything the bot posted.
+- **Observability / request tracing** — a `requestId` (UUID) is minted at the webhook entry and
+  threaded through dedup → debounce → the whole pipeline, so every log line shares it (returned in the
+  `200` body too). Since there's no DB, each request's full lifecycle is also persisted as a JSON file
+  in `traces/` (`TRACE_DIR`): the raw inbound payload (what the agent received) plus every step's
+  output — `webhook_received → parsed → classified → decided → reply_generated → auto_reply_posted` (or
+  the escalate/ignored variants) — timestamps, and the final outcome. Inspect a run with
+  `cat traces/*.json`. The `TraceSink` port means swapping files for a traces table / OTel later
+  touches nothing upstream. Plus `GET /admin/notes` to see everything the bot posted.
 - **Burst debounce** (`DEBOUNCE_MS`) — coalesces a guest's rapid-fire messages into one classified turn.
 
 ## What I'd build next
