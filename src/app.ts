@@ -5,6 +5,7 @@ import { createMockGuesty } from './adapters/guesty/mockGuesty.js';
 import { createMockLlm } from './adapters/llm/mockLlm.js';
 import { createOpenAiLlm } from './adapters/llm/openaiLlm.js';
 import { createProcessMessage } from './pipeline/processMessage.js';
+import { createDebouncer } from './pipeline/debounce.js';
 import { createWebhookRouter } from './transport/webhookRouter.js';
 import { createAdminRouter } from './transport/adminRouter.js';
 import { verifyGuestySignature } from './transport/verifySignature.js';
@@ -25,7 +26,12 @@ export function createApp(config: Config) {
   const llm = usingRealLlm ? createOpenAiLlm({ model: config.openaiModel }) : createMockLlm();
   logger.info({ llm: usingRealLlm ? `openai:${config.openaiModel}` : 'mock' }, 'LLM adapter selected');
 
-  const process = createProcessMessage({ llm, guesty, store });
+  const runPipeline = createProcessMessage({ llm, guesty, store });
+  // Optional burst debounce in front of the pipeline (no-op when DEBOUNCE_MS <= 0). The pipeline is
+  // async and owns its errors, so we fire-and-forget it from the (sync) debounced callback.
+  const process = createDebouncer(config.debounceMs, (payload) => {
+    void runPipeline(payload);
+  });
 
   const app: Express = express();
 
