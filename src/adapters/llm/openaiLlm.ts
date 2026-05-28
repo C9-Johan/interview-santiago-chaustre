@@ -15,24 +15,59 @@ import {
 import { CLOSER_SYSTEM_PROMPT, buildCloserPrompt } from '../../domain/closer.js';
 
 /**
+ * Optional, runtime overrides for the tunable surface of the adapter. Each field defaults to the
+ * baked-in constant, so `createOpenAiLlm({ model })` behaves exactly as before. This exists so the
+ * auto-research optimizer (`research/optimize.ts`) can evaluate candidate prompts/params WITHOUT
+ * editing source mid-loop — it constructs an adapter with proposed overrides, scores it on the evals,
+ * and only the winning values are ever written back to the constants above. Nothing here touches the
+ * safety gate (`decide.ts`), which is never the model's call.
+ */
+export interface LlmOverrides {
+  classifySystem?: string;
+  closerSystem?: string;
+  getListingDesc?: string;
+  checkAvailabilityDesc?: string;
+  /** Sampling temperature for both calls; undefined ⇒ provider default. */
+  temperature?: number;
+}
+
+export const DEFAULT_GET_LISTING_DESC =
+  'Fetch the listing facts (title, bedrooms, amenities, house rules, base price, address) to ground the reply.';
+export const DEFAULT_CHECK_AVAILABILITY_DESC =
+  'Check availability and the all-in total for a date window. Use before stating dates/price.';
+/** Default sampling temperature; `undefined` ⇒ provider default. Materialized by the optimizer on a win. */
+export const DEFAULT_TEMPERATURE: number | undefined = undefined;
+
+/**
  * Real LlmPort via the Vercel AI SDK.
  *
  * Two distinct call shapes, by design (CHALLENGE.md flow): classify uses STRUCTURED OUTPUT
  * (generateObject with the Classification Zod schema, so the model can't return an off-taxonomy or
  * malformed result), and generate uses TOOL CALLING so the reply is grounded in real Guesty facts
  * (listing + availability) rather than hallucinated. Prompts live in the domain layer so wording is
- * shared/testable and not buried in the adapter.
+ * shared/testable and not buried in the adapter. `overrides` lets the optimizer swap any tunable
+ * value at construction time (see LlmOverrides); defaults reproduce the committed behavior.
  */
-export function createOpenAiLlm(opts: { model: string }): LlmPort {
+export function createOpenAiLlm(
+  opts: { model: string },
+  overrides: LlmOverrides = {},
+): LlmPort {
   const model = openai(opts.model);
+  const temperature = overrides.temperature ?? DEFAULT_TEMPERATURE;
+  const classifySystem = overrides.classifySystem ?? CLASSIFY_SYSTEM_PROMPT;
+  const closerSystem = overrides.closerSystem ?? CLOSER_SYSTEM_PROMPT;
+  const getListingDesc = overrides.getListingDesc ?? DEFAULT_GET_LISTING_DESC;
+  const checkAvailabilityDesc =
+    overrides.checkAvailabilityDesc ?? DEFAULT_CHECK_AVAILABILITY_DESC;
 
   return {
     async classify(input: ClassifyInput): Promise<Classification> {
       const { object } = await generateObject({
         model,
+        temperature,
         // Strict wire schema (all keys required) for OpenAI structured output; see types.ts.
         schema: ClassificationWire,
-        system: CLASSIFY_SYSTEM_PROMPT,
+        system: classifySystem,
         prompt: buildClassifyPrompt(input),
       });
       // Coerce the validated wire result into the domain Classification.
@@ -45,15 +80,15 @@ export function createOpenAiLlm(opts: { model: string }): LlmPort {
     ): Promise<string> {
       const { text } = await generateText({
         model,
-        system: CLOSER_SYSTEM_PROMPT,
+        temperature,
+        system: closerSystem,
         prompt: buildCloserPrompt({
           message: input.message,
           classification: input.classification,
         }),
         tools: {
           get_listing: tool({
-            description:
-              'Fetch the listing facts (title, bedrooms, amenities, house rules, base price, address) to ground the reply.',
+            description: getListingDesc,
             inputSchema: z.object({ listingId: z.string().optional() }),
             execute: async ({ listingId }) =>
               guesty.getListing(
@@ -61,8 +96,7 @@ export function createOpenAiLlm(opts: { model: string }): LlmPort {
               ),
           }),
           check_availability: tool({
-            description:
-              'Check availability and the all-in total for a date window. Use before stating dates/price.',
+            description: checkAvailabilityDesc,
             inputSchema: z.object({
               listingId: z.string().optional(),
               from: z.string(),

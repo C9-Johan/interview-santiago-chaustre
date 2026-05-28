@@ -3,3 +3,5 @@ dist/
 .env
 *.log
 traces/
+research/runs/
+.DS_Store

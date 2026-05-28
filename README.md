@@ -9,7 +9,7 @@ as an **internal note** (so nothing reaches real guests). See `CHALLENGE.md` / `
 
 ```bash
 npm install
-npm test              # 25 unit tests (decision gate, webhook parsing, adapters, debounce)
+npm test              # 43 offline tests + 5 LLM evals (skipped unless OPENAI_API_KEY is set)
 npm run dev           # starts on http://localhost:3000 (mock LLM + mock Guesty, signature skipped)
 ```
 
@@ -28,6 +28,10 @@ curl -s localhost:3000/admin/notes
 curl -s -X POST localhost:3000/admin/auto-response -H 'Content-Type: application/json' -d '{"enabled":false}'
 
 # 4. Same message twice (same svix-id/postId) → second returns {"status":"duplicate"}
+
+# 5. Every accepted ack returns a requestId; inspect that request's full trace (parse → classify →
+#    decide → send) — one JSON file per request, newest last
+ls -t traces/ | head -1 && cat "traces/$(ls -t traces/ | head -1)"
 ```
 
 ### Config (all optional — defaults run offline)
@@ -41,6 +45,7 @@ curl -s -X POST localhost:3000/admin/auto-response -H 'Content-Type: application
 | `GUESTY_WEBHOOK_SECRET` | — | Svix signing secret for HMAC verification |
 | `AUTO_RESPONSE_ENABLED` | `true` | Initial state of the auto-send kill switch |
 | `DEBOUNCE_MS` | `0` | Per-conversation burst debounce window (0 = off) |
+| `TRACE_DIR` | `traces` | Folder for per-request JSON trace files (the no-DB audit log) |
 
 See `.env.example`.
 
@@ -54,9 +59,10 @@ about concrete implementations.
 ```
 transport/   thin HTTP: signature verify → dedup → fast 200 → async  (webhookRouter, adminRouter, rawBody, verifySignature)
 pipeline/    orchestration: parse → guards → classify → decide → send  (processMessage, debounce)
-domain/      pure, unit-tested: types, taxonomy, decide (the gate), parseWebhook, prompts
+domain/      pure, unit-tested: types, taxonomy, decide (the gate), parseWebhook, playbook, prompts
+telemetry/   request-scoped tracing: Tracer + TraceSink port (requestId threaded through every step)
 ports/       interfaces: LlmPort, GuestyPort, Store
-adapters/    implementations: llm/{mock,openai}, guesty/mockGuesty, store/memoryStore, log/logger
+adapters/    implementations: llm/{mock,openai}, guesty/mockGuesty, store/memoryStore, trace/fileTraceSink, log/logger
 ```
 
 ### Key decisions
@@ -88,6 +94,9 @@ adapters/    implementations: llm/{mock,openai}, guesty/mockGuesty, store/memory
   `cat traces/*.json`. The `TraceSink` port means swapping files for a traces table / OTel later
   touches nothing upstream. Plus `GET /admin/notes` to see everything the bot posted.
 - **Burst debounce** (`DEBOUNCE_MS`) — coalesces a guest's rapid-fire messages into one classified turn.
+- **LLM evals** (`test/evals/`) — a small labeled dataset scored against the §6 ground truth:
+  classification precision/recall and C.L.O.S.E.R. reply quality. Key-gated, so the offline suite stays
+  deterministic; run them to catch prompt/model regressions.
 
 ## What I'd build next
 
@@ -110,8 +119,11 @@ parallel sub-agents, each pinned to exact function signatures, then wrote the in
 (`processMessage`, `app`, `index`) myself.
 
 I verified the AI output rather than trusting it:
-- **25 unit tests**, including a full truth table for the decision gate and webhook-parsing edge cases
-  (missing reservation, empty body, host-already-replied, sender mapping).
+- **43 offline tests**, including a full truth table for the decision gate, webhook-parsing edge cases
+  (missing reservation, empty body, host-already-replied, sender mapping), the webhook transport
+  (401/400/duplicate/accepted + dedup-key recording) and real Svix signature verify/tamper checks.
+- **5 LLM evals** (key-gated) that score the real classifier and C.L.O.S.E.R. generator against the
+  §6 ground truth — so prompt/model changes are measured, not eyeballed.
 - **End-to-end runs** against a live local server: confirmed the fast-200 ack, the C.L.O.S.E.R. note,
   duplicate suppression, toggle-off escalation, and that an `R1` haggle message correctly beats a
   co-occurring `Y1` parking signal via the priority rule (`RED > … > GREEN > GRAY`).

@@ -1,5 +1,5 @@
 import type { Classification, GuestMessage } from './types.js';
-import { STRATEGY } from './taxonomy.js';
+import { playFor } from './playbook.js';
 
 /**
  * Prompt builders for the C.L.O.S.E.R. reply (consumed by the OpenAI adapter, which exposes
@@ -41,6 +41,9 @@ export function buildCloserPrompt(input: {
   if (e.vehicles != null) entityLines.push(`vehicles: ${e.vehicles}`);
   const entities = entityLines.length > 0 ? entityLines.join('; ') : '(none extracted)';
 
+  // Per-code playbook: shapes the reply by the winning code rather than a generic six-beat dump.
+  const play = playFor(classification.primary_code);
+
   const res = message.reservation;
   const reservationLine = res
     ? `Reservation: ${res.confirmationCode ?? res.id}` +
@@ -51,7 +54,8 @@ export function buildCloserPrompt(input: {
   return `Guest name: ${message.guestName ?? 'unknown'}
 Language: ${message.language}
 Listing id: ${message.listingId ?? 'unknown'}
-Primary code: ${classification.primary_code} — ${STRATEGY[classification.primary_code]}
+Primary code: ${classification.primary_code} — ${play.strategy}
+Strategy for this code: ${play.guidance}
 Extracted entities: ${entities}
 ${reservationLine}
 

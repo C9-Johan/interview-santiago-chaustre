@@ -1,0 +1,29 @@
+{
+  "event": "reservation.messageReceived",
+  "reservationId": "res_party_001",
+  "message": {
+    "postId": "msg_party_001",
+    "body": "Hey! We'd love to throw a birthday party for about 20 friends at the apartment this Saturday night. We'll keep it inside the building, promise — is that okay?",
+    "createdAt": "2026-05-27T19:12:44Z",
+    "type": "fromGuest",
+    "module": "airbnb2"
+  },
+  "conversation": {
+    "_id": "conv_party_001",
+    "guestId": "guest_party_001",
+    "language": "en",
+    "status": "OPEN",
+    "integration": { "platform": "airbnb2" },
+    "meta": {
+      "guestName": "Diego",
+      "reservations": [{
+        "_id": "res_party_001",
+        "checkIn":  "2026-05-29T22:00:00.000Z",
+        "checkOut": "2026-05-31T16:00:00.000Z",
+        "confirmationCode": "PARTY1234"
+      }]
+    },
+    "thread": []
+  },
+  "meta": { "eventId": "evt_party_001", "messageId": "msgid_party_001" }
+}
